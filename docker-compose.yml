@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik-geoblock
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-static-config.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik-dynamic-config.yml:/etc/traefik/dynamic.yml:ro
+    command:
+      - --log.level=INFO
+      - --accesslog=true
+    networks:
+      - traefik-network
+
+  # Example backend service
+  whoami:
+    image: traefik/whoami
+    container_name: whoami-service
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.localhost`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+      - "traefik.http.routers.whoami.middlewares=geoblock-test@file"
+      - "traefik.http.services.whoami.loadbalancer.server.port=80"
+    networks:
+      - traefik-network
+
+networks:
+  traefik-network:
+    driver: bridge

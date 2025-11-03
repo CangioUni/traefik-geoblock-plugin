@@ -1,0 +1,95 @@
+# dynamic.yml - Dynamic Configuration with GeoBlock Middleware
+
+http:
+  # Define GeoBlock middlewares
+  middlewares:
+    # Example 1: Allow only specific countries
+    geoblock-allowlist:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - US
+            - CA
+            - GB
+            - DE
+            - FR
+          databaseURL: "https://ipapi.co/{ip}/json/"
+          cacheDuration: 60
+          blockMessage: "Access is only allowed from US, CA, GB, DE, and FR"
+          logBlocked: true
+          trustedProxies:
+            - "10.0.0.0/8"
+            - "172.16.0.0/12"
+
+    # Example 2: Block specific countries
+    geoblock-blocklist:
+      plugin:
+        geoblock:
+          blockedCountries:
+            - CN
+            - RU
+            - KP
+          databaseURL: "https://ipapi.co/{ip}/json/"
+          cacheDuration: 120
+          defaultAction: allow
+          blockMessage: "Access from your country is not permitted"
+          logBlocked: true
+
+    # Example 3: Block all by default, only allow specific countries
+    geoblock-strict:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - US
+          databaseURL: "https://ipapi.co/{ip}/json/"
+          cacheDuration: 30
+          defaultAction: block
+          blockMessage: "Access denied - restricted region"
+          logBlocked: true
+
+  # Define routers that use the middleware
+  routers:
+    # Example router with allowlist
+    api-router:
+      rule: "Host(`api.example.com`)"
+      service: api-service
+      entryPoints:
+        - web
+      middlewares:
+        - geoblock-allowlist
+
+    # Example router with blocklist
+    web-router:
+      rule: "Host(`www.example.com`)"
+      service: web-service
+      entryPoints:
+        - web
+      middlewares:
+        - geoblock-blocklist
+
+    # Example router with strict mode
+    admin-router:
+      rule: "Host(`admin.example.com`)"
+      service: admin-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-strict
+      tls: {}
+
+  # Define services
+  services:
+    api-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.10:8080"
+
+    web-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.20:80"
+
+    admin-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.30:3000"

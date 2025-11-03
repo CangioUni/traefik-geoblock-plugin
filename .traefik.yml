@@ -1,0 +1,20 @@
+# Traefik Plugin Manifest
+displayName: GeoBlock Middleware
+type: middleware
+
+import: github.com/yourusername/traefik-geoblock-plugin
+
+summary: 'Middleware plugin to geoblock incoming connections based on IP address and country'
+
+testData:
+  allowedCountries:
+    - US
+    - CA
+    - GB
+  blockedCountries: []
+  databaseURL: https://ipapi.co/{ip}/json/
+  cacheDuration: 60
+  defaultAction: allow
+  blockMessage: Access denied from your country
+  logBlocked: true
+  trustedProxies: []

@@ -1,0 +1,194 @@
+# advanced-example.yml - Advanced GeoBlock Configuration Examples
+
+http:
+  middlewares:
+    # Example 1: Geo-based rate limiting
+    # Allow US/CA unlimited, limit others
+    geoblock-premium-countries:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - US
+            - CA
+            - GB
+          blockMessage: "Premium features available only in US, CA, and GB"
+          logBlocked: true
+          cacheDuration: 120
+
+    # Standard rate limiting for non-premium countries
+    rate-limit-standard:
+      rateLimit:
+        average: 100
+        burst: 200
+
+    # Example 2: Geo-based authentication bypass
+    # Skip authentication for local/internal users
+    geoblock-internal-only:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - US
+          defaultAction: block
+          blockMessage: "This admin panel is only accessible from the US"
+          trustedProxies:
+            - "10.0.0.0/8"
+
+    basic-auth:
+      basicAuth:
+        users:
+          - "admin:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"
+
+    # Example 3: Progressive restrictions
+    # Block high-risk countries from sensitive endpoints
+    geoblock-high-risk:
+      plugin:
+        geoblock:
+          blockedCountries:
+            - CN
+            - RU
+            - KP
+            - IR
+          blockMessage: "Access restricted due to security policies"
+          logBlocked: true
+
+    # Example 4: API versioning with geo-restrictions
+    # New API features only available in certain regions
+    geoblock-beta-regions:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - US
+            - CA
+          blockMessage: "Beta features are currently only available in US and CA"
+
+    # Example 5: Compliance-based blocking
+    # Block access to comply with regional regulations
+    geoblock-gdpr-compliance:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - AT  # Austria
+            - BE  # Belgium
+            - BG  # Bulgaria
+            - HR  # Croatia
+            - CY  # Cyprus
+            - CZ  # Czech Republic
+            - DK  # Denmark
+            - EE  # Estonia
+            - FI  # Finland
+            - FR  # France
+            - DE  # Germany
+            - GR  # Greece
+            - HU  # Hungary
+            - IE  # Ireland
+            - IT  # Italy
+            - LV  # Latvia
+            - LT  # Lithuania
+            - LU  # Luxembourg
+            - MT  # Malta
+            - NL  # Netherlands
+            - PL  # Poland
+            - PT  # Portugal
+            - RO  # Romania
+            - SK  # Slovakia
+            - SI  # Slovenia
+            - ES  # Spain
+            - SE  # Sweden
+            - GB  # United Kingdom
+          blockMessage: "This service is only available in EU/EEA countries"
+
+  routers:
+    # Public API - only block high-risk countries
+    public-api:
+      rule: "Host(`api.example.com`) && PathPrefix(`/v1/public`)"
+      service: api-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-high-risk
+      tls: {}
+
+    # Premium API - geo-restriction + rate limiting
+    premium-api:
+      rule: "Host(`api.example.com`) && PathPrefix(`/v1/premium`)"
+      service: api-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-premium-countries
+        - rate-limit-standard
+      tls: {}
+
+    # Beta API - restricted to beta regions
+    beta-api:
+      rule: "Host(`api.example.com`) && PathPrefix(`/v2/beta`)"
+      service: api-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-beta-regions
+      tls: {}
+
+    # Admin panel - US only + authentication
+    admin-panel:
+      rule: "Host(`admin.example.com`)"
+      service: admin-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-internal-only
+        - basic-auth
+      tls: {}
+
+    # EU-only service (GDPR compliance)
+    eu-service:
+      rule: "Host(`eu.example.com`)"
+      service: eu-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-gdpr-compliance
+      tls: {}
+
+    # CDN with geo-failover
+    # Primary: Serve from main servers to allowed countries
+    # Fallback: Redirect others to CDN
+    main-site:
+      rule: "Host(`www.example.com`)"
+      service: main-service
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-premium-countries
+      tls: {}
+
+  services:
+    api-service:
+      loadBalancer:
+        servers:
+          - url: "http://api-backend:8080"
+        healthCheck:
+          path: /health
+          interval: "10s"
+          timeout: "3s"
+
+    admin-service:
+      loadBalancer:
+        servers:
+          - url: "http://admin-backend:3000"
+
+    eu-service:
+      loadBalancer:
+        servers:
+          - url: "http://eu-backend:8080"
+
+    main-service:
+      loadBalancer:
+        servers:
+          - url: "http://main-backend:80"
+
+# TLS configuration
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/example.com.crt
+      keyFile: /etc/traefik/certs/example.com.key
