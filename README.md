@@ -27,20 +27,13 @@ A Traefik middleware plugin that blocks or allows traffic based on the geographi
 
 ## Installation
 
-### Step 1: Publish the Plugin
-
-1. Create a GitHub repository for your plugin (e.g., `traefik-geoblock-plugin`)
-2. Push the plugin code to your repository
-3. Tag a release (e.g., `v0.1.0`)
+### Step 1: Copy repo to Traefik folder
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/yourusername/traefik-geoblock-plugin.git
-git push -u origin main
-git tag v0.1.0
-git push --tags
+cd traefik
+mkdir plugins
+cd plugins
+git clone https://github.com/CangioUni/traefik-geoblock-plugin.git
 ```
 
 ### Step 2: Configure Traefik
@@ -55,11 +48,20 @@ experimental:
       version: v0.1.0
 ```
 
+Add folder to compose configuration (`docker-compose.yml`):
+
+```yaml
+services:
+  traefik:
+    volumes:
+      - /home/user/dockers/traefik/plugins/traefik-geoblock-plugin:/plugins-local/src/github.com/CangioUni/traefik-geoblock-plugin/
+```
+
 ## Usage Examples
 
 ### Example 1: Allow Only Specific Countries
 
-Only allow traffic from the US, Canada, and UK:
+Only allow traffic from IT and DE:
 
 ```yaml
 http:
@@ -68,9 +70,8 @@ http:
       plugin:
         geoblock:
           allowedCountries:
-            - US
-            - CA
-            - GB
+            - IT
+            - DE
           blockMessage: "Access is only available from US, CA, and GB"
           logBlocked: true
 
@@ -173,13 +174,12 @@ You can use other services by changing the `databaseURL`:
 databaseURL: "http://ip-api.com/json/{ip}"
 
 # ipinfo.io (requires API token)
-databaseURL: "https://ipinfo.io/{ip}?token=YOUR_TOKEN"
+databaseURL: "https://ipinfo.io/{ip}/json/?token=YOUR_TOKEN"
 
 # ipgeolocation.io (requires API key)
 databaseURL: "https://api.ipgeolocation.io/ipgeo?apiKey=YOUR_KEY&ip={ip}"
 ```
 
-**Note**: You may need to adjust the plugin code to parse different response formats.
 
 ## Performance Considerations
 
