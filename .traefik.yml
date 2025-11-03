@@ -2,7 +2,7 @@
 displayName: GeoBlock Middleware
 type: middleware
 
-import: github.com/yourusername/traefik-geoblock-plugin
+import: github.com/CangioUni/traefik-geoblock-plugin
 
 summary: 'Middleware plugin to geoblock incoming connections based on IP address and country'
 
