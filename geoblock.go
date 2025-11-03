@@ -62,7 +62,9 @@ type cacheEntry struct {
 
 type ipAPIResponse struct {
 	IP          string `json:"ip"`
-	Country     string `json:"country_code"`
+	Country     string `json:"country_code"` // ipapi.co format
+	CountryCode string `json:"countryCode"`  // ip-api.com format
+	CountryISO  string `json:"country"`      // ipinfo.io format
 	CountryName string `json:"country_name"`
 }
 
@@ -215,11 +217,24 @@ func (g *GeoBlock) queryGeoIP(ip string) (string, error) {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if data.Country == "" {
+	// Try different field names used by various GeoIP APIs
+	country := data.Country // ipapi.co: country_code
+	if country == "" {
+		country = data.CountryCode // ip-api.com: countryCode
+	}
+	if country == "" {
+		country = data.CountryISO // ipinfo.io: country
+	}
+
+	if country == "" {
+		// Log the raw response for debugging
+		if g.config.LogBlocked {
+			fmt.Printf("[GeoBlock] Warning: Could not extract country from API response for IP %s. Raw response: %s\n", ip, string(body))
+		}
 		return "UNKNOWN", nil
 	}
 
-	return strings.ToUpper(data.Country), nil
+	return strings.ToUpper(country), nil
 }
 
 func (g *GeoBlock) isPrivateIP(ip string) bool {
