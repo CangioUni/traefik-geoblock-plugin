@@ -10,8 +10,8 @@ import (
 func TestCreateConfig(t *testing.T) {
 	config := CreateConfig()
 
-	if config.DatabaseURL == "" {
-		t.Error("Default DatabaseURL should not be empty")
+	if config.QueryURL == "" {
+		t.Error("Default QueryURL should not be empty")
 	}
 
 	if config.CacheDuration != 60 {

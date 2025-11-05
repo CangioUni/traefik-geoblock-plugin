@@ -4,17 +4,21 @@ type: middleware
 
 import: github.com/CangioUni/traefik-geoblock-plugin
 
-summary: 'Middleware plugin to geoblock incoming connections based on IP address and country'
+summary: 'Middleware plugin to geoblock incoming connections based on IP address and country with local database support'
 
 testData:
   allowedCountries:
-    - US
-    - CA
-    - GB
+    - IT
+    - DE
   blockedCountries: []
-  databaseURL: https://ipapi.co/{ip}/json/
+  queryURL: https://ipapi.co/{ip}/json/
+  databaseURL: ""
+  databasePath: /tmp/ipinfo_lite.json
   cacheDuration: 60
   defaultAction: allow
   blockMessage: Access denied from your country
+  blockPageTitle: Access Denied
+  blockPageBody: ""
+  redirectURL: ""
   logBlocked: true
   trustedProxies: []
