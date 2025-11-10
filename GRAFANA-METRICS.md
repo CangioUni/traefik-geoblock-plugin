@@ -2,6 +2,8 @@
 
 This document explains the Grafana-compatible metrics logging feature for the Traefik GeoBlock plugin.
 
+> **Note**: If you need to expose metrics to Prometheus with secure remote scraping, IP restrictions, and authentication, see [PROMETHEUS-INTEGRATION.md](PROMETHEUS-INTEGRATION.md).
+
 ## Overview
 
 The metrics logging feature provides structured, privacy-respecting logs that can be ingested by Grafana Loki or other log aggregation systems. It tracks the number of hits from each country and organization without logging individual IP addresses.
@@ -325,6 +327,23 @@ Create `/etc/logrotate.d/traefik-geoblock`:
     endscript
 }
 ```
+
+## Prometheus Integration
+
+If you prefer to use Prometheus instead of (or in addition to) Grafana Loki, see the comprehensive **[Prometheus Integration Guide](PROMETHEUS-INTEGRATION.md)** which covers:
+
+- Converting JSON logs to Prometheus metrics
+- Exposing metrics through Traefik with a secure endpoint
+- Restricting access to specific IP addresses
+- Adding authentication for remote scraping
+- Complete configuration examples
+- Security best practices
+
+The Prometheus guide is ideal for scenarios where you need:
+- Remote metrics scraping from a dedicated Prometheus server
+- Strong access controls with IP whitelisting and authentication
+- Integration with existing Prometheus + Grafana monitoring stacks
+- Long-term metrics storage and alerting capabilities
 
 ## Support
 

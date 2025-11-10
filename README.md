@@ -38,7 +38,9 @@ A Traefik middleware plugin that blocks or allows traffic based on the geographi
 | `metricsFlushSeconds` | int | No | 60 | How often to flush aggregated metrics to disk |
 | `logRetentionDays` | int | No | 14 | Days to retain log files before automatic cleanup |
 
-> **Note**: For detailed Grafana integration instructions, see [GRAFANA-METRICS.md](GRAFANA-METRICS.md)
+> **Note**: For detailed integration instructions, see:
+> - [GRAFANA-METRICS.md](GRAFANA-METRICS.md) - Grafana Loki integration and dashboards
+> - [PROMETHEUS-INTEGRATION.md](PROMETHEUS-INTEGRATION.md) - Prometheus metrics with secure remote scraping
 
 ## Installation
 
