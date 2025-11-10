@@ -7,23 +7,38 @@ A Traefik middleware plugin that blocks or allows traffic based on the geographi
 - 🌍 **Country-based filtering**: Allow or block traffic from specific countries
 - 🚀 **High performance**: Built-in caching to minimize API calls
 - 🔒 **Flexible configuration**: Support for both allowlists and blocklists
-- 📊 **Logging**: Optional logging of blocked requests
+- 📊 **Grafana metrics**: Privacy-respecting structured logging for traffic analytics
+- 🏢 **Organization tracking**: Log ISP/company information without exposing IPs
 - 🔄 **Proxy support**: Handles X-Forwarded-For and X-Real-IP headers
 - 🎯 **Default actions**: Configure default behavior for unknown countries
 - 💾 **Smart caching**: Configurable cache duration to optimize performance
+- 🗑️ **Automatic cleanup**: Built-in log retention and rotation
 
 ## Configuration Options
+
+### Basic Options
 
 | Option | Type | Required | Default | Description |
 |--------|------|----------|---------|-------------|
 | `allowedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to allow (e.g., US, GB, DE) |
 | `blockedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to block |
-| `databaseURL` | string | No | `https://ipapi.co/{ip}/json/` | GeoIP lookup API URL (use `{ip}` placeholder) |
+| `queryURL` | string | No | `https://ipapi.co/{ip}/json/` | GeoIP lookup API URL (use `{ip}` placeholder) |
 | `cacheDuration` | int | No | 60 | Cache duration in minutes |
 | `defaultAction` | string | No | allow | Default action for unknown countries: `allow` or `block` |
 | `blockMessage` | string | No | Access denied from your country | Message shown to blocked users |
-| `logBlocked` | bool | No | true | Whether to log blocked requests |
+| `logBlocked` | bool | No | true | Legacy stdout logging (includes IPs) |
 | `trustedProxies` | []string | No | [] | List of trusted proxy IP addresses/ranges |
+
+### Grafana Metrics Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `enableMetricsLog` | bool | No | false | Enable Grafana-compatible metrics logging |
+| `metricsLogPath` | string | No | `/var/log/traefik-geoblock/metrics.log` | Path for metrics log file |
+| `metricsFlushSeconds` | int | No | 60 | How often to flush aggregated metrics to disk |
+| `logRetentionDays` | int | No | 14 | Days to retain log files before automatic cleanup |
+
+> **Note**: For detailed Grafana integration instructions, see [GRAFANA-METRICS.md](GRAFANA-METRICS.md)
 
 ## Installation
 
@@ -138,6 +153,30 @@ http:
             - "192.168.0.0/16"
           logBlocked: true
 ```
+
+### Example 5: With Grafana Metrics
+
+Enable privacy-respecting metrics for Grafana dashboards:
+
+```yaml
+http:
+  middlewares:
+    geoblock-with-metrics:
+      plugin:
+        geoblock:
+          blockedCountries:
+            - CN
+            - RU
+          # Enable Grafana-compatible logging
+          enableMetricsLog: true
+          metricsLogPath: "/var/log/traefik-geoblock/metrics.log"
+          metricsFlushSeconds: 60
+          logRetentionDays: 14
+          # Disable IP logging for privacy
+          logBlocked: false
+```
+
+See [GRAFANA-METRICS.md](GRAFANA-METRICS.md) for complete setup instructions and dashboard examples.
 
 ## How It Works
 

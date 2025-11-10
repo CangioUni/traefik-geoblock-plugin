@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,37 +20,45 @@ import (
 
 // Config holds the plugin configuration
 type Config struct {
-	AllowedCountries []string `json:"allowedCountries,omitempty"`
-	BlockedCountries []string `json:"blockedCountries,omitempty"`
-	QueryURL         string   `json:"queryURL,omitempty"`      // API endpoint for querying (e.g., https://ipapi.co/{ip}/json/)
-	DatabaseURL      string   `json:"databaseURL,omitempty"`   // URL to download local database (e.g., https://ipinfo.io/data/ipinfo_lite.json.gz?token=TOKEN)
-	DatabasePath     string   `json:"databasePath,omitempty"`  // Path to store local database
-	CacheDuration    int      `json:"cacheDuration,omitempty"` // in minutes
-	DefaultAction    string   `json:"defaultAction,omitempty"` // "allow" or "block"
-	BlockMessage     string   `json:"blockMessage,omitempty"`
-	BlockPageTitle   string   `json:"blockPageTitle,omitempty"`
-	BlockPageBody    string   `json:"blockPageBody,omitempty"`
-	RedirectURL      string   `json:"redirectURL,omitempty"` // URL to redirect blocked users (optional)
-	LogBlocked       bool     `json:"logBlocked,omitempty"`
-	TrustedProxies   []string `json:"trustedProxies,omitempty"`
+	AllowedCountries    []string `json:"allowedCountries,omitempty"`
+	BlockedCountries    []string `json:"blockedCountries,omitempty"`
+	QueryURL            string   `json:"queryURL,omitempty"`         // API endpoint for querying (e.g., https://ipapi.co/{ip}/json/)
+	DatabaseURL         string   `json:"databaseURL,omitempty"`      // URL to download local database (e.g., https://ipinfo.io/data/ipinfo_lite.json.gz?token=TOKEN)
+	DatabasePath        string   `json:"databasePath,omitempty"`     // Path to store local database
+	CacheDuration       int      `json:"cacheDuration,omitempty"`    // in minutes
+	DefaultAction       string   `json:"defaultAction,omitempty"`    // "allow" or "block"
+	BlockMessage        string   `json:"blockMessage,omitempty"`
+	BlockPageTitle      string   `json:"blockPageTitle,omitempty"`
+	BlockPageBody       string   `json:"blockPageBody,omitempty"`
+	RedirectURL         string   `json:"redirectURL,omitempty"`      // URL to redirect blocked users (optional)
+	LogBlocked          bool     `json:"logBlocked,omitempty"`       // Legacy logging (stdout with IPs)
+	TrustedProxies      []string `json:"trustedProxies,omitempty"`
+	MetricsLogPath      string   `json:"metricsLogPath,omitempty"`   // Path for Grafana-compatible metrics logs
+	MetricsFlushSeconds int      `json:"metricsFlushSeconds,omitempty"` // How often to flush metrics (default: 60)
+	LogRetentionDays    int      `json:"logRetentionDays,omitempty"` // Days to retain logs (default: 14)
+	EnableMetricsLog    bool     `json:"enableMetricsLog,omitempty"` // Enable Grafana-compatible logging
 }
 
 // CreateConfig creates the default plugin configuration
 func CreateConfig() *Config {
 	return &Config{
-		AllowedCountries: []string{},
-		BlockedCountries: []string{},
-		QueryURL:         "https://ipapi.co/{ip}/json/",
-		DatabaseURL:      "",
-		DatabasePath:     "/tmp/ipinfo_lite.json",
-		CacheDuration:    60,
-		DefaultAction:    "allow",
-		BlockMessage:     "Access denied from your country",
-		BlockPageTitle:   "Access Denied",
-		BlockPageBody:    "",
-		RedirectURL:      "",
-		LogBlocked:       true,
-		TrustedProxies:   []string{},
+		AllowedCountries:    []string{},
+		BlockedCountries:    []string{},
+		QueryURL:            "https://ipapi.co/{ip}/json/",
+		DatabaseURL:         "",
+		DatabasePath:        "/tmp/ipinfo_lite.json",
+		CacheDuration:       60,
+		DefaultAction:       "allow",
+		BlockMessage:        "Access denied from your country",
+		BlockPageTitle:      "Access Denied",
+		BlockPageBody:       "",
+		RedirectURL:         "",
+		LogBlocked:          true,
+		TrustedProxies:      []string{},
+		MetricsLogPath:      "/var/log/traefik-geoblock/metrics.log",
+		MetricsFlushSeconds: 60,
+		LogRetentionDays:    14,
+		EnableMetricsLog:    false,
 	}
 }
 
@@ -62,6 +72,7 @@ type GeoBlock struct {
 	allowedCountries map[string]bool
 	blockedCountries map[string]bool
 	trustedProxies   map[string]bool
+	metricsAggregator *metricsAggregator
 }
 
 type geoCache struct {
@@ -70,8 +81,9 @@ type geoCache struct {
 }
 
 type cacheEntry struct {
-	country   string
-	expiresAt time.Time
+	country      string
+	organization string
+	expiresAt    time.Time
 }
 
 type localDatabase struct {
@@ -95,11 +107,47 @@ type ipInfoLiteEntry struct {
 }
 
 type ipAPIResponse struct {
-	IP          string `json:"ip"`
-	Country     string `json:"country_code"` // ipapi.co format
-	CountryCode string `json:"countryCode"`  // ip-api.com format
-	CountryISO  string `json:"country"`      // ipinfo.io format
-	CountryName string `json:"country_name"`
+	IP           string `json:"ip"`
+	Country      string `json:"country_code"` // ipapi.co format
+	CountryCode  string `json:"countryCode"`  // ip-api.com format
+	CountryISO   string `json:"country"`      // ipinfo.io format
+	CountryName  string `json:"country_name"`
+	Organization string `json:"org"`      // ipapi.co/ipinfo.io format
+	ISP          string `json:"isp"`      // ip-api.com format
+	AS           string `json:"as"`       // Alternative org format
+	ASName       string `json:"asname"`   // Alternative org format
+}
+
+// Metrics structures for Grafana-compatible logging
+
+type metricsAggregator struct {
+	mu           sync.RWMutex
+	metrics      map[string]*metricEntry
+	logPath      string
+	flushSeconds int
+	retentionDays int
+	logger       *log.Logger
+	logFile      *os.File
+}
+
+type metricEntry struct {
+	Country      string
+	Organization string
+	Action       string // "allowed" or "blocked"
+	Count        int64
+}
+
+type metricLogEntry struct {
+	Timestamp    string `json:"timestamp"`
+	Country      string `json:"country"`
+	Organization string `json:"organization,omitempty"`
+	Action       string `json:"action"`
+	Count        int64  `json:"count"`
+}
+
+type geoInfo struct {
+	Country      string
+	Organization string
 }
 
 // New creates a new GeoBlock plugin
@@ -154,6 +202,25 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		trustedProxies:   trustedProxies,
 	}
 
+	// Initialize metrics aggregator if enabled
+	if config.EnableMetricsLog {
+		if config.MetricsFlushSeconds <= 0 {
+			config.MetricsFlushSeconds = 60
+		}
+		if config.LogRetentionDays <= 0 {
+			config.LogRetentionDays = 14
+		}
+
+		aggregator, err := newMetricsAggregator(config.MetricsLogPath, config.MetricsFlushSeconds, config.LogRetentionDays)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize metrics aggregator: %w", err)
+		}
+		gb.metricsAggregator = aggregator
+
+		// Start background flusher
+		go gb.metricsAggregator.startFlusher(ctx)
+	}
+
 	// Initialize local database if configured
 	if config.DatabaseURL != "" {
 		gb.localDB = &localDatabase{
@@ -183,27 +250,41 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	country, err := g.getCountry(ip)
+	geoInfo, err := g.getGeoInfo(ip)
 	if err != nil {
 		if g.config.LogBlocked {
 			fmt.Printf("[GeoBlock] Error getting country for IP %s: %v\n", ip, err)
 		}
 		// On error, apply default action
 		if g.config.DefaultAction == "block" {
-			g.blockRequest(rw, ip, "UNKNOWN")
+			g.blockRequest(rw, "UNKNOWN", "")
+			if g.metricsAggregator != nil {
+				g.metricsAggregator.recordMetric("UNKNOWN", "", "blocked")
+			}
 			return
 		}
 		g.next.ServeHTTP(rw, req)
 		return
 	}
 
-	if g.shouldBlock(country) {
-		g.blockRequest(rw, ip, country)
+	if g.shouldBlock(geoInfo.Country) {
+		g.blockRequest(rw, geoInfo.Country, geoInfo.Organization)
+		if g.metricsAggregator != nil {
+			g.metricsAggregator.recordMetric(geoInfo.Country, geoInfo.Organization, "blocked")
+		}
 		return
 	}
 
+	// Record allowed metric
+	if g.metricsAggregator != nil {
+		g.metricsAggregator.recordMetric(geoInfo.Country, geoInfo.Organization, "allowed")
+	}
+
 	// Add country header for downstream services
-	req.Header.Set("X-Country-Code", country)
+	req.Header.Set("X-Country-Code", geoInfo.Country)
+	if geoInfo.Organization != "" {
+		req.Header.Set("X-Organization", geoInfo.Organization)
+	}
 	g.next.ServeHTTP(rw, req)
 }
 
@@ -233,63 +314,68 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 	return host
 }
 
-func (g *GeoBlock) getCountry(ip string) (string, error) {
+func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
 	// Check if it's a private/local IP
 	if g.isPrivateIP(ip) {
-		return "PRIVATE", nil
+		return &geoInfo{Country: "PRIVATE", Organization: ""}, nil
 	}
 
 	// Check cache first
-	if country := g.cache.get(ip); country != "" {
-		return country, nil
+	if info := g.cache.get(ip); info != nil {
+		return info, nil
 	}
 
-	var country string
+	var info *geoInfo
 	var err error
 
 	// Use local database if available
 	if g.localDB != nil && len(g.localDB.ranges) > 0 {
-		country = g.lookupLocalDatabase(ip)
+		country := g.lookupLocalDatabase(ip)
 		if country != "" && country != "UNKNOWN" {
-			g.cache.set(ip, country, time.Duration(g.config.CacheDuration)*time.Minute)
-			return country, nil
+			info = &geoInfo{Country: country, Organization: ""}
+			// Try to get organization from API
+			if apiInfo, apiErr := g.queryGeoIP(ip); apiErr == nil {
+				info.Organization = apiInfo.Organization
+			}
+			g.cache.set(ip, info, time.Duration(g.config.CacheDuration)*time.Minute)
+			return info, nil
 		}
 	}
 
 	// Fallback to API query
-	country, err = g.queryGeoIP(ip)
+	info, err = g.queryGeoIP(ip)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Cache the result
-	g.cache.set(ip, country, time.Duration(g.config.CacheDuration)*time.Minute)
+	g.cache.set(ip, info, time.Duration(g.config.CacheDuration)*time.Minute)
 
-	return country, nil
+	return info, nil
 }
 
-func (g *GeoBlock) queryGeoIP(ip string) (string, error) {
+func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
 	url := strings.Replace(g.config.QueryURL, "{ip}", ip, 1)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("failed to query geo IP: %w", err)
+		return nil, fmt.Errorf("failed to query geo IP: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("geo IP API returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("geo IP API returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var data ipAPIResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	// Try different field names used by various GeoIP APIs
@@ -304,12 +390,27 @@ func (g *GeoBlock) queryGeoIP(ip string) (string, error) {
 	if country == "" {
 		// Log the raw response for debugging
 		if g.config.LogBlocked {
-			fmt.Printf("[GeoBlock] Warning: Could not extract country from API response for IP %s. Raw response: %s\n", ip, string(body))
+			fmt.Printf("[GeoBlock] Warning: Could not extract country from API response. Raw response: %s\n", string(body))
 		}
-		return "UNKNOWN", nil
+		return &geoInfo{Country: "UNKNOWN", Organization: ""}, nil
 	}
 
-	return strings.ToUpper(country), nil
+	// Extract organization information
+	organization := data.Organization
+	if organization == "" {
+		organization = data.ISP
+	}
+	if organization == "" {
+		organization = data.ASName
+	}
+	if organization == "" {
+		organization = data.AS
+	}
+
+	return &geoInfo{
+		Country:      strings.ToUpper(country),
+		Organization: organization,
+	}, nil
 }
 
 func (g *GeoBlock) isPrivateIP(ip string) bool {
@@ -358,9 +459,13 @@ func (g *GeoBlock) shouldBlock(country string) bool {
 	// Default action
 	return g.config.DefaultAction == "block"
 }
-func (g *GeoBlock) blockRequest(rw http.ResponseWriter, ip, country string) {
+func (g *GeoBlock) blockRequest(rw http.ResponseWriter, country, organization string) {
 	if g.config.LogBlocked {
-		fmt.Printf("[GeoBlock] Blocked request from IP %s (Country: %s)\n", ip, country)
+		if organization != "" {
+			fmt.Printf("[GeoBlock] Blocked request (Country: %s, Organization: %s)\n", country, organization)
+		} else {
+			fmt.Printf("[GeoBlock] Blocked request (Country: %s)\n", country)
+		}
 	}
 
 	// If redirect URL is configured, redirect instead of showing block page
@@ -743,29 +848,33 @@ func ipInRange(ip, start, end net.IP) bool {
 	// Compare bytes
 	return bytes.Compare(ip, start) >= 0 && bytes.Compare(ip, end) <= 0
 }
-func (c *geoCache) get(ip string) string {
+func (c *geoCache) get(ip string) *geoInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	entry, exists := c.entries[ip]
 	if !exists {
-		return ""
+		return nil
 	}
 
 	if time.Now().After(entry.expiresAt) {
-		return ""
+		return nil
 	}
 
-	return entry.country
+	return &geoInfo{
+		Country:      entry.country,
+		Organization: entry.organization,
+	}
 }
 
-func (c *geoCache) set(ip, country string, duration time.Duration) {
+func (c *geoCache) set(ip string, info *geoInfo, duration time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.entries[ip] = &cacheEntry{
-		country:   country,
-		expiresAt: time.Now().Add(duration),
+		country:      info.Country,
+		organization: info.Organization,
+		expiresAt:    time.Now().Add(duration),
 	}
 
 	// Simple cleanup: remove expired entries periodically
@@ -776,5 +885,154 @@ func (c *geoCache) set(ip, country string, duration time.Duration) {
 				delete(c.entries, key)
 			}
 		}
+	}
+}
+
+// Metrics aggregator implementation for Grafana-compatible logging
+
+func newMetricsAggregator(logPath string, flushSeconds, retentionDays int) (*metricsAggregator, error) {
+	// Create log directory if it doesn't exist
+	logDir := filepath.Dir(logPath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	// Open log file in append mode
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	logger := log.New(logFile, "", 0) // No prefix or flags, we'll use JSON
+
+	ma := &metricsAggregator{
+		metrics:       make(map[string]*metricEntry),
+		logPath:       logPath,
+		flushSeconds:  flushSeconds,
+		retentionDays: retentionDays,
+		logger:        logger,
+		logFile:       logFile,
+	}
+
+	return ma, nil
+}
+
+func (ma *metricsAggregator) recordMetric(country, organization, action string) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+
+	// Create a unique key for this country+organization+action combination
+	key := fmt.Sprintf("%s|%s|%s", country, organization, action)
+
+	if entry, exists := ma.metrics[key]; exists {
+		entry.Count++
+	} else {
+		ma.metrics[key] = &metricEntry{
+			Country:      country,
+			Organization: organization,
+			Action:       action,
+			Count:        1,
+		}
+	}
+}
+
+func (ma *metricsAggregator) startFlusher(ctx context.Context) {
+	ticker := time.NewTicker(time.Duration(ma.flushSeconds) * time.Second)
+	defer ticker.Stop()
+
+	// Also run cleanup daily
+	cleanupTicker := time.NewTicker(24 * time.Hour)
+	defer cleanupTicker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			ma.flush()
+		case <-cleanupTicker.C:
+			ma.cleanupOldLogs()
+		case <-ctx.Done():
+			ma.flush() // Final flush before shutdown
+			ma.close()
+			return
+		}
+	}
+}
+
+func (ma *metricsAggregator) flush() {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+
+	if len(ma.metrics) == 0 {
+		return
+	}
+
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+
+	// Write each metric as a JSON line
+	for _, entry := range ma.metrics {
+		logEntry := metricLogEntry{
+			Timestamp:    timestamp,
+			Country:      entry.Country,
+			Organization: entry.Organization,
+			Action:       entry.Action,
+			Count:        entry.Count,
+		}
+
+		jsonData, err := json.Marshal(logEntry)
+		if err != nil {
+			fmt.Printf("[GeoBlock] Error marshaling metric: %v\n", err)
+			continue
+		}
+
+		ma.logger.Println(string(jsonData))
+	}
+
+	// Clear metrics after flushing
+	ma.metrics = make(map[string]*metricEntry)
+
+	// Sync to disk
+	if ma.logFile != nil {
+		ma.logFile.Sync()
+	}
+}
+
+func (ma *metricsAggregator) cleanupOldLogs() {
+	logDir := filepath.Dir(ma.logPath)
+	logBase := filepath.Base(ma.logPath)
+
+	files, err := os.ReadDir(logDir)
+	if err != nil {
+		fmt.Printf("[GeoBlock] Error reading log directory: %v\n", err)
+		return
+	}
+
+	cutoffTime := time.Now().AddDate(0, 0, -ma.retentionDays)
+
+	for _, file := range files {
+		// Check if file is a rotated log file
+		if !strings.HasPrefix(file.Name(), logBase) {
+			continue
+		}
+
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+
+		// Delete if older than retention period
+		if info.ModTime().Before(cutoffTime) {
+			filePath := filepath.Join(logDir, file.Name())
+			if err := os.Remove(filePath); err != nil {
+				fmt.Printf("[GeoBlock] Error removing old log file %s: %v\n", filePath, err)
+			} else {
+				fmt.Printf("[GeoBlock] Removed old log file: %s\n", filePath)
+			}
+		}
+	}
+}
+
+func (ma *metricsAggregator) close() {
+	if ma.logFile != nil {
+		ma.logFile.Close()
 	}
 }

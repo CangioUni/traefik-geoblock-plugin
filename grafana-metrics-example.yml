@@ -1,0 +1,73 @@
+# Example Traefik configuration with Grafana-compatible metrics logging
+# This configuration enables structured JSON logging of country-based traffic metrics
+# suitable for ingestion by Grafana Loki or other log aggregation systems
+
+http:
+  middlewares:
+    geoblock-with-metrics:
+      plugin:
+        traefik-geoblock-plugin:
+          # Basic geoblocking configuration
+          blockedCountries:
+            - CN
+            - RU
+            - KP
+
+          # GeoIP API configuration (choose one)
+          # Option 1: ipapi.co (free tier: 1000 requests/day)
+          queryURL: "https://ipapi.co/{ip}/json/"
+
+          # Option 2: ip-api.com (free tier: 45 requests/minute)
+          # queryURL: "http://ip-api.com/json/{ip}"
+
+          # Option 3: ipinfo.io (requires token)
+          # queryURL: "https://ipinfo.io/{ip}/json?token=YOUR_TOKEN"
+
+          # Cache configuration
+          cacheDuration: 60  # minutes
+
+          # Default action when country is unknown
+          defaultAction: "allow"  # or "block"
+
+          # Legacy logging (stdout with IPs) - keep disabled for privacy
+          logBlocked: false
+
+          # ==== GRAFANA METRICS CONFIGURATION ====
+
+          # Enable Grafana-compatible metrics logging
+          enableMetricsLog: true
+
+          # Path for metrics log file (JSON lines format)
+          metricsLogPath: "/var/log/traefik-geoblock/metrics.log"
+
+          # How often to flush metrics to disk (in seconds)
+          # Lower values = more real-time, higher disk I/O
+          # Higher values = more aggregation, less disk I/O
+          metricsFlushSeconds: 60
+
+          # How many days to retain log files
+          # Old files are automatically cleaned up daily
+          logRetentionDays: 14
+
+          # Block page customization (optional)
+          blockPageTitle: "Access Denied"
+          blockMessage: "Sorry, access from your country is not permitted"
+
+          # Trusted proxies (optional)
+          trustedProxies:
+            - "10.0.0.0/8"
+            - "172.16.0.0/12"
+            - "192.168.0.0/16"
+
+  routers:
+    my-router:
+      rule: "Host(`example.com`)"
+      service: my-service
+      middlewares:
+        - geoblock-with-metrics
+
+  services:
+    my-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8080"

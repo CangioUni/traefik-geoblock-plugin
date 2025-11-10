@@ -227,17 +227,26 @@ func TestCache(t *testing.T) {
 	cache := &geoCache{entries: make(map[string]*cacheEntry)}
 
 	// Test setting and getting
-	cache.set("1.2.3.4", "US", 60*1000)
-	country := cache.get("1.2.3.4")
+	testInfo := &geoInfo{Country: "US", Organization: "Test Org"}
+	cache.set("1.2.3.4", testInfo, 60*1000)
+	info := cache.get("1.2.3.4")
 
-	if country != "US" {
-		t.Errorf("Expected country 'US', got '%s'", country)
+	if info == nil {
+		t.Fatal("Expected geoInfo, got nil")
+	}
+
+	if info.Country != "US" {
+		t.Errorf("Expected country 'US', got '%s'", info.Country)
+	}
+
+	if info.Organization != "Test Org" {
+		t.Errorf("Expected organization 'Test Org', got '%s'", info.Organization)
 	}
 
 	// Test non-existent entry
-	country = cache.get("5.6.7.8")
-	if country != "" {
-		t.Errorf("Expected empty string for non-existent entry, got '%s'", country)
+	info = cache.get("5.6.7.8")
+	if info != nil {
+		t.Errorf("Expected nil for non-existent entry, got '%v'", info)
 	}
 }
 
