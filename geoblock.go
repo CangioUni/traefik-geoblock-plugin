@@ -20,23 +20,24 @@ import (
 
 // Config holds the plugin configuration
 type Config struct {
-	AllowedCountries    []string `json:"allowedCountries,omitempty"`
-	BlockedCountries    []string `json:"blockedCountries,omitempty"`
-	QueryURL            string   `json:"queryURL,omitempty"`         // API endpoint for querying (e.g., https://ipapi.co/{ip}/json/)
-	DatabaseURL         string   `json:"databaseURL,omitempty"`      // URL to download local database (e.g., https://ipinfo.io/data/ipinfo_lite.json.gz?token=TOKEN)
-	DatabasePath        string   `json:"databasePath,omitempty"`     // Path to store local database
-	CacheDuration       int      `json:"cacheDuration,omitempty"`    // in minutes
-	DefaultAction       string   `json:"defaultAction,omitempty"`    // "allow" or "block"
-	BlockMessage        string   `json:"blockMessage,omitempty"`
-	BlockPageTitle      string   `json:"blockPageTitle,omitempty"`
-	BlockPageBody       string   `json:"blockPageBody,omitempty"`
-	RedirectURL         string   `json:"redirectURL,omitempty"`      // URL to redirect blocked users (optional)
-	LogBlocked          bool     `json:"logBlocked,omitempty"`       // Legacy logging (stdout with IPs)
-	TrustedProxies      []string `json:"trustedProxies,omitempty"`
-	MetricsLogPath      string   `json:"metricsLogPath,omitempty"`   // Path for Grafana-compatible metrics logs
-	MetricsFlushSeconds int      `json:"metricsFlushSeconds,omitempty"` // How often to flush metrics (default: 60)
-	LogRetentionDays    int      `json:"logRetentionDays,omitempty"` // Days to retain logs (default: 14)
-	EnableMetricsLog    bool     `json:"enableMetricsLog,omitempty"` // Enable Grafana-compatible logging
+	AllowedCountries       []string `json:"allowedCountries,omitempty"`
+	BlockedCountries       []string `json:"blockedCountries,omitempty"`
+	QueryURL               string   `json:"queryURL,omitempty"`         // API endpoint for querying (e.g., https://ipapi.co/{ip}/json/)
+	DatabaseURL            string   `json:"databaseURL,omitempty"`      // URL to download local database (e.g., https://ipinfo.io/data/ipinfo_lite.json.gz?token=TOKEN)
+	DatabasePath           string   `json:"databasePath,omitempty"`     // Path to store local database
+	CacheDuration          int      `json:"cacheDuration,omitempty"`    // in minutes
+	DefaultAction          string   `json:"defaultAction,omitempty"`    // "allow" or "block"
+	BlockMessage           string   `json:"blockMessage,omitempty"`
+	BlockPageTitle         string   `json:"blockPageTitle,omitempty"`
+	BlockPageBody          string   `json:"blockPageBody,omitempty"`
+	RedirectURL            string   `json:"redirectURL,omitempty"`      // URL to redirect blocked users (optional)
+	LogBlocked             bool     `json:"logBlocked,omitempty"`       // Legacy logging (stdout with IPs)
+	TrustedProxies         []string `json:"trustedProxies,omitempty"`
+	MetricsLogPath         string   `json:"metricsLogPath,omitempty"`   // Path for Grafana-compatible metrics logs (deprecated, use PrometheusMetricsPath)
+	MetricsFlushSeconds    int      `json:"metricsFlushSeconds,omitempty"` // How often to flush metrics (default: 60)
+	LogRetentionDays       int      `json:"logRetentionDays,omitempty"` // Days to retain logs (default: 14)
+	EnableMetricsLog       bool     `json:"enableMetricsLog,omitempty"` // Enable Grafana-compatible logging (deprecated, use PrometheusMetricsPath)
+	PrometheusMetricsPath  string   `json:"prometheusMetricsPath,omitempty"` // Path to expose Prometheus metrics endpoint (e.g., "/__geoblock_metrics")
 }
 
 // CreateConfig creates the default plugin configuration
@@ -64,15 +65,16 @@ func CreateConfig() *Config {
 
 // GeoBlock holds the plugin state
 type GeoBlock struct {
-	next             http.Handler
-	config           *Config
-	name             string
-	cache            *geoCache
-	localDB          *localDatabase
-	allowedCountries map[string]bool
-	blockedCountries map[string]bool
-	trustedProxies   map[string]bool
+	next              http.Handler
+	config            *Config
+	name              string
+	cache             *geoCache
+	localDB           *localDatabase
+	allowedCountries  map[string]bool
+	blockedCountries  map[string]bool
+	trustedProxies    map[string]bool
 	metricsAggregator *metricsAggregator
+	promMetrics       *prometheusMetrics
 }
 
 type geoCache struct {
@@ -150,6 +152,19 @@ type geoInfo struct {
 	Organization string
 }
 
+// Prometheus metrics structures for native Prometheus integration
+
+type prometheusMetrics struct {
+	mu      sync.RWMutex
+	counters map[string]int64 // key: "country|organization|action"
+}
+
+type prometheusMetricKey struct {
+	Country      string
+	Organization string
+	Action       string
+}
+
 // New creates a new GeoBlock plugin
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	if config.QueryURL == "" {
@@ -202,7 +217,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		trustedProxies:   trustedProxies,
 	}
 
-	// Initialize metrics aggregator if enabled
+	// Initialize Prometheus metrics if path is configured
+	if config.PrometheusMetricsPath != "" {
+		gb.promMetrics = &prometheusMetrics{
+			counters: make(map[string]int64),
+		}
+		fmt.Printf("[GeoBlock] Prometheus metrics enabled at path: %s\n", config.PrometheusMetricsPath)
+	}
+
+	// Initialize metrics aggregator if enabled (legacy JSON logging)
 	if config.EnableMetricsLog {
 		if config.MetricsFlushSeconds <= 0 {
 			config.MetricsFlushSeconds = 60
@@ -244,6 +267,12 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// Check if this is a Prometheus metrics request
+	if g.config.PrometheusMetricsPath != "" && req.URL.Path == g.config.PrometheusMetricsPath {
+		g.servePrometheusMetrics(rw, req)
+		return
+	}
+
 	ip := g.getClientIP(req)
 	if ip == "" {
 		g.next.ServeHTTP(rw, req)
@@ -258,9 +287,7 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		// On error, apply default action
 		if g.config.DefaultAction == "block" {
 			g.blockRequest(rw, "UNKNOWN", "")
-			if g.metricsAggregator != nil {
-				g.metricsAggregator.recordMetric("UNKNOWN", "", "blocked")
-			}
+			g.recordMetrics("UNKNOWN", "", "blocked")
 			return
 		}
 		g.next.ServeHTTP(rw, req)
@@ -269,16 +296,12 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	if g.shouldBlock(geoInfo.Country) {
 		g.blockRequest(rw, geoInfo.Country, geoInfo.Organization)
-		if g.metricsAggregator != nil {
-			g.metricsAggregator.recordMetric(geoInfo.Country, geoInfo.Organization, "blocked")
-		}
+		g.recordMetrics(geoInfo.Country, geoInfo.Organization, "blocked")
 		return
 	}
 
 	// Record allowed metric
-	if g.metricsAggregator != nil {
-		g.metricsAggregator.recordMetric(geoInfo.Country, geoInfo.Organization, "allowed")
-	}
+	g.recordMetrics(geoInfo.Country, geoInfo.Organization, "allowed")
 
 	// Add country header for downstream services
 	req.Header.Set("X-Country-Code", geoInfo.Country)
@@ -1035,4 +1058,85 @@ func (ma *metricsAggregator) close() {
 	if ma.logFile != nil {
 		ma.logFile.Close()
 	}
+}
+
+// Prometheus metrics implementation
+
+func (g *GeoBlock) recordMetrics(country, organization, action string) {
+	// Record to legacy JSON aggregator if enabled
+	if g.metricsAggregator != nil {
+		g.metricsAggregator.recordMetric(country, organization, action)
+	}
+
+	// Record to Prometheus metrics if enabled
+	if g.promMetrics != nil {
+		g.promMetrics.increment(country, organization, action)
+	}
+}
+
+func (pm *prometheusMetrics) increment(country, organization, action string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	key := fmt.Sprintf("%s|%s|%s", country, organization, action)
+	pm.counters[key]++
+}
+
+func (g *GeoBlock) servePrometheusMetrics(rw http.ResponseWriter, req *http.Request) {
+	if g.promMetrics == nil {
+		http.Error(rw, "Metrics not enabled", http.StatusNotFound)
+		return
+	}
+
+	metrics := g.promMetrics.render()
+
+	rw.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	rw.WriteHeader(http.StatusOK)
+	rw.Write([]byte(metrics))
+}
+
+func (pm *prometheusMetrics) render() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var buf strings.Builder
+
+	// Write metric header
+	buf.WriteString("# HELP traefik_geoblock_requests_total Total number of requests processed by geoblock plugin\n")
+	buf.WriteString("# TYPE traefik_geoblock_requests_total counter\n")
+
+	// Write metrics
+	for key, count := range pm.counters {
+		parts := strings.Split(key, "|")
+		if len(parts) != 3 {
+			continue
+		}
+
+		country := parts[0]
+		organization := parts[1]
+		action := parts[2]
+
+		// Escape label values for Prometheus format
+		country = escapePrometheusLabel(country)
+		organization = escapePrometheusLabel(organization)
+		action = escapePrometheusLabel(action)
+
+		if organization != "" {
+			buf.WriteString(fmt.Sprintf("traefik_geoblock_requests_total{country=\"%s\",organization=\"%s\",action=\"%s\"} %d\n",
+				country, organization, action, count))
+		} else {
+			buf.WriteString(fmt.Sprintf("traefik_geoblock_requests_total{country=\"%s\",action=\"%s\"} %d\n",
+				country, action, count))
+		}
+	}
+
+	return buf.String()
+}
+
+func escapePrometheusLabel(s string) string {
+	// Escape backslashes, newlines, and double quotes for Prometheus label values
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return s
 }
