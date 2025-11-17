@@ -4,14 +4,246 @@ This guide explains how to expose GeoBlock plugin metrics to Prometheus and conf
 
 ## Overview
 
-The Traefik GeoBlock plugin logs structured metrics to JSON files. To make these metrics available to Prometheus, we'll:
+The Traefik GeoBlock plugin now supports **native Prometheus metrics** without requiring external exporters. You have two options:
 
-1. Convert JSON logs to Prometheus metrics using a metrics exporter
-2. Expose the metrics endpoint through Traefik
-3. Restrict access to a specific IP address (your Prometheus server)
-4. Add authentication for additional security
+### Method 1: Direct Prometheus Integration (Recommended)
 
-## Architecture
+The plugin exposes metrics directly at a configurable endpoint in Prometheus text format. This is the **simplest and recommended** approach.
+
+**Advantages:**
+- No external dependencies (no json_exporter needed)
+- Real-time metrics (no JSON file I/O)
+- Lower resource usage
+- Simpler configuration
+
+### Method 2: Legacy JSON Exporter (Alternative)
+
+Use JSON file logging with an external json_exporter. This method is kept for backwards compatibility.
+
+---
+
+## Method 1: Direct Prometheus Integration (Recommended)
+
+This is the new, simplified approach that exposes metrics directly from the plugin.
+
+### Architecture
+
+```
+┌──────────────────────────────────────┐
+│  GeoBlock Plugin (Traefik Middleware)│
+│  - Tracks requests in memory         │
+│  - Exposes /__geoblock_metrics       │
+│  - Prometheus text format            │
+└──────────────────────────────────────┘
+                 │
+                 │ HTTP (internal)
+                 ▼
+┌──────────────────────────────────────┐
+│  Traefik Router                      │
+│  - Maps to metrics endpoint          │
+│  - IP whitelist                      │
+│  - Basic Auth                        │
+│  - HTTPS/TLS                         │
+└──────────────────────────────────────┘
+                 │
+                 │ HTTPS (external)
+                 ▼
+┌──────────────────────────────────────┐
+│  Remote Prometheus Server            │
+│  - Scrapes metrics endpoint          │
+│  - Stores time-series data           │
+└──────────────────────────────────────┘
+```
+
+### Step 1: Configure the Plugin
+
+Configure the GeoBlock plugin to expose Prometheus metrics at a specific path:
+
+```yaml
+http:
+  middlewares:
+    my-geoblock:
+      plugin:
+        traefik-geoblock-plugin:
+          # Basic geoblock configuration
+          blockedCountries:
+            - CN
+            - RU
+            - KP
+
+          # Enable Prometheus metrics endpoint
+          prometheusMetricsPath: "/__geoblock_metrics"
+```
+
+**Note:** Use a path that won't conflict with your application routes. Common choices:
+- `/__geoblock_metrics`
+- `/__metrics`
+- `/internal/metrics`
+
+### Step 2: Configure Traefik to Expose the Metrics
+
+Create a Traefik router to expose the metrics endpoint securely. Update your Traefik dynamic configuration:
+
+```yaml
+# /etc/traefik/dynamic/geoblock-prometheus.yml
+http:
+  routers:
+    # Main application router with geoblock
+    my-app:
+      rule: "Host(`example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - my-geoblock  # Apply geoblock middleware
+      service: my-app-service
+      tls:
+        certResolver: letsencrypt
+
+    # Metrics endpoint router
+    geoblock-metrics:
+      rule: "Host(`example.com`) && Path(`/__geoblock_metrics`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-metrics-ipwhitelist
+        - geoblock-metrics-auth
+        - my-geoblock  # Must use the same geoblock middleware instance!
+      service: my-app-service  # Route to the same service
+      tls:
+        certResolver: letsencrypt
+      priority: 100  # Higher priority to match before the main route
+
+  middlewares:
+    # IP Whitelist - ONLY allow your Prometheus server
+    geoblock-metrics-ipwhitelist:
+      ipWhiteList:
+        sourceRange:
+          - "192.168.1.100/32"  # Replace with your Prometheus server IP
+
+    # Basic Authentication
+    geoblock-metrics-auth:
+      basicAuth:
+        users:
+          - "prometheus:$apr1$rPsXN5pD$abc123xyz..."  # Generate with htpasswd
+
+  services:
+    my-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8080"  # Your application
+```
+
+### Generate Authentication Credentials
+
+Create a password hash for Basic Authentication:
+
+```bash
+# Install htpasswd if needed
+sudo apt-get install apache2-utils
+
+# Generate password (replace 'your-password' with a strong password)
+htpasswd -nb prometheus your-password
+
+# Output will be like:
+# prometheus:$apr1$rPsXN5pD$abc123xyz...
+```
+
+### Step 3: Configure Prometheus
+
+On your Prometheus server, add the scrape configuration:
+
+```yaml
+# /etc/prometheus/prometheus.yml
+scrape_configs:
+  - job_name: 'traefik-geoblock'
+    scrape_interval: 60s
+    scrape_timeout: 10s
+    scheme: https
+
+    # Basic authentication
+    basic_auth:
+      username: prometheus
+      password: your-password
+
+    # Metrics path
+    metrics_path: '/__geoblock_metrics'
+
+    # Targets
+    static_configs:
+      - targets:
+          - 'example.com:443'
+        labels:
+          instance: 'geoblock-production'
+          environment: 'prod'
+```
+
+### Step 4: Reload Configurations
+
+```bash
+# Reload Traefik
+sudo systemctl reload traefik
+
+# Validate and reload Prometheus
+promtool check config /etc/prometheus/prometheus.yml
+sudo systemctl reload prometheus
+```
+
+### Step 5: Verify the Setup
+
+```bash
+# Test the metrics endpoint (replace with your credentials)
+curl -u prometheus:your-password https://example.com/__geoblock_metrics
+```
+
+Expected output:
+```
+# HELP traefik_geoblock_requests_total Total number of requests processed by geoblock plugin
+# TYPE traefik_geoblock_requests_total counter
+traefik_geoblock_requests_total{country="US",action="allowed"} 42
+traefik_geoblock_requests_total{country="CN",action="blocked"} 7
+traefik_geoblock_requests_total{country="DE",organization="Deutsche Telekom AG",action="allowed"} 15
+```
+
+### Available Metrics
+
+The plugin exposes the following metrics:
+
+**Metric Name:** `traefik_geoblock_requests_total`
+- **Type:** Counter
+- **Description:** Total number of requests processed by the geoblock plugin
+- **Labels:**
+  - `country` - ISO country code (e.g., "US", "CN", "DE")
+  - `organization` - ISP/Organization name (if available)
+  - `action` - Either "allowed" or "blocked"
+
+### Example Prometheus Queries
+
+```promql
+# Total requests by country
+sum by (country) (traefik_geoblock_requests_total)
+
+# Blocked requests by country
+sum by (country) (traefik_geoblock_requests_total{action="blocked"})
+
+# Rate of blocked requests per minute
+rate(traefik_geoblock_requests_total{action="blocked"}[5m]) * 60
+
+# Top 10 organizations with blocked requests
+topk(10, sum by (organization) (traefik_geoblock_requests_total{action="blocked"}))
+
+# Percentage of blocked requests
+sum(traefik_geoblock_requests_total{action="blocked"})
+/
+sum(traefik_geoblock_requests_total) * 100
+```
+
+---
+
+## Method 2: Legacy JSON Exporter (Alternative)
+
+This method uses JSON file logging with an external json_exporter. Use this if you need file-based metrics or have existing infrastructure built around it.
+
+### Architecture
 
 ```
 ┌─────────────────┐
@@ -40,7 +272,7 @@ The Traefik GeoBlock plugin logs structured metrics to JSON files. To make these
                                       └──────────────────┘
 ```
 
-## Step 1: Enable Metrics Logging
+## Step 1: Enable JSON Metrics Logging
 
 First, configure the GeoBlock plugin to log metrics in your Traefik dynamic configuration:
 

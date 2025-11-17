@@ -1,0 +1,87 @@
+# Example Traefik Dynamic Configuration for Direct Prometheus Integration
+# This example shows how to configure the GeoBlock plugin with native Prometheus metrics
+
+http:
+  routers:
+    # Main application router with geoblock middleware
+    my-app:
+      rule: "Host(`example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - my-geoblock
+      service: my-app-service
+      tls:
+        certResolver: letsencrypt
+
+    # Dedicated router for Prometheus metrics endpoint
+    geoblock-metrics:
+      rule: "Host(`example.com`) && Path(`/__geoblock_metrics`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - geoblock-metrics-ipwhitelist
+        - geoblock-metrics-auth
+        - my-geoblock  # IMPORTANT: Must use the same geoblock middleware!
+      service: my-app-service
+      tls:
+        certResolver: letsencrypt
+      priority: 100  # Higher priority to match before the main route
+
+  middlewares:
+    # GeoBlock middleware configuration
+    my-geoblock:
+      plugin:
+        traefik-geoblock-plugin:
+          # Geoblock settings
+          blockedCountries:
+            - CN
+            - RU
+            - KP
+
+          # Prometheus metrics configuration
+          # Set this to enable native Prometheus metrics endpoint
+          prometheusMetricsPath: "/__geoblock_metrics"
+
+          # Optional: Legacy JSON logging (not needed for Prometheus)
+          # enableMetricsLog: false
+
+    # IP whitelist - restrict metrics endpoint to Prometheus server only
+    geoblock-metrics-ipwhitelist:
+      ipWhiteList:
+        sourceRange:
+          - "192.168.1.100/32"  # Replace with your Prometheus server IP
+          # Add more IPs if needed:
+          # - "10.0.0.50/32"
+
+    # Basic authentication for metrics endpoint
+    geoblock-metrics-auth:
+      basicAuth:
+        users:
+          # Generate with: htpasswd -nb prometheus your-password
+          - "prometheus:$apr1$rPsXN5pD$abc123xyz..."
+
+  services:
+    my-app-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8080"
+
+---
+# Corresponding Prometheus scrape configuration
+# Add this to /etc/prometheus/prometheus.yml
+
+# scrape_configs:
+#   - job_name: 'traefik-geoblock'
+#     scrape_interval: 60s
+#     scrape_timeout: 10s
+#     scheme: https
+#     basic_auth:
+#       username: prometheus
+#       password: your-password
+#     metrics_path: '/__geoblock_metrics'
+#     static_configs:
+#       - targets:
+#           - 'example.com:443'
+#         labels:
+#           instance: 'geoblock-production'
