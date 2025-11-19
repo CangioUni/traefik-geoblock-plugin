@@ -15,7 +15,7 @@ Use this checklist to deploy your Traefik GeoBlock plugin step-by-step.
 - [ ] Make repository **public** (required for Traefik plugins)
 - [ ] Update `go.mod` with your GitHub username:
   ```
-  module github.com/YOUR_USERNAME/traefik-geoblock-plugin
+  module github.com/CangioUni/traefik-geoblock-plugin
   ```
 
 ## ☐ Initial Commit
@@ -33,8 +33,8 @@ git commit -m "Initial commit: Traefik GeoBlock plugin"
 # ☐ Set main branch
 git branch -M main
 
-# ☐ Add remote (replace YOUR_USERNAME)
-git remote add origin https://github.com/YOUR_USERNAME/traefik-geoblock-plugin.git
+# ☐ Add remote
+git remote add origin https://github.com/CangioUni/traefik-geoblock-plugin.git
 
 # ☐ Push to GitHub
 git push -u origin main
@@ -49,12 +49,12 @@ git push --tags
 ## ☐ Configure Traefik (Static)
 
 - [ ] Locate your Traefik static configuration file (`traefik.yml`)
-- [ ] Add plugin configuration (replace YOUR_USERNAME):
+- [ ] Add plugin configuration:
   ```yaml
   experimental:
     plugins:
       geoblock:
-        moduleName: github.com/YOUR_USERNAME/traefik-geoblock-plugin
+        moduleName: github.com/CangioUni/traefik-geoblock-plugin
         version: v0.1.0
   ```
 - [ ] Save the file

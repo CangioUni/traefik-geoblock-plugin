@@ -2,7 +2,7 @@
 experimental:
   plugins:
     geoblock:
-      moduleName: github.com/yourusername/traefik-geoblock-plugin
+      moduleName: github.com/CangioUni/traefik-geoblock-plugin
       version: v0.1.0
 
 entryPoints:

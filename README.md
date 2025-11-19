@@ -61,7 +61,7 @@ Add the plugin to your Traefik static configuration (`traefik.yml`):
 experimental:
   plugins:
     geoblock:
-      moduleName: github.com/yourusername/traefik-geoblock-plugin
+      moduleName: github.com/CangioUni/traefik-geoblock-plugin
       version: v0.1.0
 ```
 

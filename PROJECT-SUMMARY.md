@@ -33,11 +33,10 @@ A complete, production-ready Traefik middleware plugin for geoblocking based on 
 ### Step 1: Publish to GitHub
 
 ```bash
-# Replace YOUR_USERNAME with your GitHub username
 git init
 git add .
 git commit -m "Initial commit: Traefik GeoBlock plugin"
-git remote add origin https://github.com/YOUR_USERNAME/traefik-geoblock-plugin.git
+git remote add origin https://github.com/CangioUni/traefik-geoblock-plugin.git
 git branch -M main
 git push -u origin main
 git tag v0.1.0
@@ -52,7 +51,7 @@ In your `traefik.yml`:
 experimental:
   plugins:
     geoblock:
-      moduleName: github.com/YOUR_USERNAME/traefik-geoblock-plugin
+      moduleName: github.com/CangioUni/traefik-geoblock-plugin
       version: v0.1.0
 ```
 
@@ -231,14 +230,6 @@ Output format:
 - Increase `cacheDuration` to 120+ minutes
 - Consider self-hosting GeoIP database
 - Check GeoIP API response times
-
-## 📝 Next Steps
-
-1. **Customize**: Update `go.mod` with your GitHub username
-2. **Deploy**: Follow the deployment steps above
-3. **Monitor**: Enable logging initially, then disable in production
-4. **Optimize**: Adjust `cacheDuration` based on your traffic patterns
-5. **Contribute**: Add features, improve docs, share improvements!
 
 ## 🤝 Contributing
 
