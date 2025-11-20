@@ -1,0 +1,91 @@
+run:
+  timeout: 5m
+  go: '1.21'
+  tests: true
+  skip-dirs:
+    - vendor
+    - .github
+
+linters:
+  enable:
+    # region - default linters
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code
+    - govet         # Vet examines Go source code
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Static analysis checks
+    - typecheck     # Type-check Go code
+    - unused        # Check for unused code
+    # endregion - default linters
+
+    # region - additional linters
+    - gofmt         # Check formatting
+    - gofumpt       # Stricter gofmt
+    - goimports     # Check import formatting
+    - cyclop        # Check cyclomatic complexity
+    - whitespace    # Check whitespace
+    - decorder      # Check declaration order
+    - exportloopref # Check for exported loop vars
+    - funlen        # Check function length
+    - gci           # Control import order
+    - goconst       # Find repeated strings
+    - gocritic      # Opinionated Go linter
+    - gosec         # Security checker
+    - grouper       # Group import/const/var/type declarations
+    - nilnil        # Check returning nil nil
+    - unconvert     # Remove unnecessary type conversions
+    - unparam       # Find unused function parameters
+    - usestdlibvars # Suggest stdlib variables
+    # endregion - additional linters
+
+linters-settings:
+  gofumpt:
+    extra-rules: true
+
+  cyclop:
+    max-complexity: 20
+
+  funlen:
+    lines: 100
+    statements: 50
+
+  govet:
+    enable-all: true
+    disable:
+      - shadow
+
+  gosec:
+    excludes:
+      - G404 # Use of weak random number generator (math/rand instead of crypto/rand)
+
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/CangioUni/traefik-geoblock-plugin)
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - funlen
+        - goconst
+        - gosec
+
+    # Exclude known false positives
+    - linters:
+        - staticcheck
+      text: "SA1019:" # Ignore deprecation warnings for now
+
+  # Maximum issues count per one linter
+  max-issues-per-linter: 0
+
+  # Maximum count of issues with the same text
+  max-same-issues: 0
+
+  # Show all issues from a linter
+  new: false
+
+  # Fix found issues (if supported by the linter)
+  fix: true
