@@ -18,6 +18,13 @@ import (
 	"time"
 )
 
+const (
+	// CountryUnknown represents an unknown country code
+	CountryUnknown = "UNKNOWN"
+	// DefaultActionAllow represents the default allow action
+	DefaultActionAllow = "allow"
+)
+
 // Config holds the plugin configuration
 type Config struct {
 	AllowedCountries       []string `json:"allowedCountries,omitempty"`
@@ -49,7 +56,7 @@ func CreateConfig() *Config {
 		DatabaseURL:         "",
 		DatabasePath:        "/tmp/ipinfo_lite.json",
 		CacheDuration:       60,
-		DefaultAction:       "allow",
+		DefaultAction:       DefaultActionAllow,
 		BlockMessage:        "Access denied from your country",
 		BlockPageTitle:      "Access Denied",
 		BlockPageBody:       "",
@@ -159,12 +166,6 @@ type prometheusMetrics struct {
 	counters map[string]int64 // key: "country|organization|action"
 }
 
-type prometheusMetricKey struct {
-	Country      string
-	Organization string
-	Action       string
-}
-
 // New creates a new GeoBlock plugin
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	if config.QueryURL == "" {
@@ -179,8 +180,8 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config.CacheDuration = 60
 	}
 
-	if config.DefaultAction != "allow" && config.DefaultAction != "block" {
-		config.DefaultAction = "allow"
+	if config.DefaultAction != DefaultActionAllow && config.DefaultAction != "block" {
+		config.DefaultAction = DefaultActionAllow
 	}
 
 	if config.BlockMessage == "" {
@@ -269,7 +270,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Check if this is a Prometheus metrics request
 	if g.config.PrometheusMetricsPath != "" && req.URL.Path == g.config.PrometheusMetricsPath {
-		g.servePrometheusMetrics(rw, req)
+		g.servePrometheusMetrics(rw)
 		return
 	}
 
@@ -286,8 +287,8 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 		// On error, apply default action
 		if g.config.DefaultAction == "block" {
-			g.blockRequest(rw, "UNKNOWN", "")
-			g.recordMetrics("UNKNOWN", "", "blocked")
+			g.blockRequest(rw, CountryUnknown, "")
+			g.recordMetrics(CountryUnknown, "", "blocked")
 			return
 		}
 		g.next.ServeHTTP(rw, req)
@@ -354,7 +355,7 @@ func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
 	// Use local database if available
 	if g.localDB != nil && len(g.localDB.ranges) > 0 {
 		country := g.lookupLocalDatabase(ip)
-		if country != "" && country != "UNKNOWN" {
+		if country != "" && country != CountryUnknown {
 			info = &geoInfo{Country: country, Organization: ""}
 			// Try to get organization from API
 			if apiInfo, apiErr := g.queryGeoIP(ip); apiErr == nil {
@@ -415,7 +416,7 @@ func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
 		if g.config.LogBlocked {
 			fmt.Printf("[GeoBlock] Warning: Could not extract country from API response. Raw response: %s\n", string(body))
 		}
-		return &geoInfo{Country: "UNKNOWN", Organization: ""}, nil
+		return &geoInfo{Country: CountryUnknown, Organization: ""}, nil
 	}
 
 	// Extract organization information
@@ -512,70 +513,21 @@ func (g *GeoBlock) generateBlockPage(country string) string {
 
 	// If custom body is provided, use it
 	if body != "" {
-		return fmt.Sprintf(`<!DOCTYPE html>
+		return g.generateCustomBlockPage(title, message, body, country)
+	}
+
+	// Default block page
+	return g.generateDefaultBlockPage(title, message, country)
+}
+
+func (g *GeoBlock) generateCustomBlockPage(title, message, body, country string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
-            width: 100%%;
-            padding: 40px;
-            text-align: center;
-        }
-        .icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-        }
-        h1 {
-            color: #2d3748;
-            font-size: 28px;
-            margin-bottom: 16px;
-            font-weight: 600;
-        }
-        .message {
-            color: #4a5568;
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 24px;
-        }
-        .custom-body {
-            color: #718096;
-            font-size: 14px;
-            line-height: 1.8;
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #e2e8f0;
-        }
-        .country-info {
-            background: #f7fafc;
-            border-radius: 8px;
-            padding: 12px 16px;
-            display: inline-block;
-            color: #4a5568;
-            font-size: 14px;
-            margin-top: 20px;
-        }
-        .country-code {
-            font-weight: 600;
-            color: #667eea;
-        }
-    </style>
+    <style>%s</style>
 </head>
 <body>
     <div class="container">
@@ -588,88 +540,17 @@ func (g *GeoBlock) generateBlockPage(country string) string {
         </div>
     </div>
 </body>
-</html>`, title, title, message, body, country)
-	}
+</html>`, title, getCustomBlockPageStyles(), title, message, body, country)
+}
 
-	// Default block page
+func (g *GeoBlock) generateDefaultBlockPage(title, message, country string) string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 500px;
-            width: 100%%;
-            padding: 40px;
-            text-align: center;
-            animation: slideIn 0.3s ease-out;
-        }
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        .icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%%, 100%% { transform: scale(1); }
-            50%% { transform: scale(1.05); }
-        }
-        h1 {
-            color: #2d3748;
-            font-size: 28px;
-            margin-bottom: 16px;
-            font-weight: 600;
-        }
-        .message {
-            color: #4a5568;
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 24px;
-        }
-        .country-info {
-            background: #f7fafc;
-            border-radius: 8px;
-            padding: 12px 16px;
-            display: inline-block;
-            color: #4a5568;
-            font-size: 14px;
-        }
-        .country-code {
-            font-weight: 600;
-            color: #667eea;
-        }
-        .footer {
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #e2e8f0;
-            color: #a0aec0;
-            font-size: 12px;
-        }
-    </style>
+    <style>%s</style>
 </head>
 <body>
     <div class="container">
@@ -684,7 +565,72 @@ func (g *GeoBlock) generateBlockPage(country string) string {
         </div>
     </div>
 </body>
-</html>`, title, title, message, country)
+</html>`, title, getDefaultBlockPageStyles(), title, message, country)
+}
+
+func getCustomBlockPageStyles() string {
+	return `* { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+            text-align: center;
+        }
+        .icon { font-size: 64px; margin-bottom: 20px; }
+        h1 { color: #2d3748; font-size: 28px; margin-bottom: 16px; font-weight: 600; }
+        .message { color: #4a5568; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
+        .custom-body { color: #718096; font-size: 14px; line-height: 1.8; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0; }
+        .country-info { background: #f7fafc; border-radius: 8px; padding: 12px 16px; display: inline-block; color: #4a5568; font-size: 14px; margin-top: 20px; }
+        .country-code { font-weight: 600; color: #667eea; }`
+}
+
+func getDefaultBlockPageStyles() string {
+	return `* { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+            text-align: center;
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .icon { font-size: 64px; margin-bottom: 20px; animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        h1 { color: #2d3748; font-size: 28px; margin-bottom: 16px; font-weight: 600; }
+        .message { color: #4a5568; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
+        .country-info { background: #f7fafc; border-radius: 8px; padding: 12px 16px; display: inline-block; color: #4a5568; font-size: 14px; }
+        .country-code { font-weight: 600; color: #667eea; }
+        .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0; color: #a0aec0; font-size: 12px; }`
 }
 
 
@@ -772,7 +718,9 @@ func (g *GeoBlock) downloadDatabase() error {
 	}
 
 	// Reopen for reading
-	tmpFile.Seek(0, 0)
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return fmt.Errorf("failed to seek temp file: %w", err)
+	}
 
 	// Decompress gzip
 	gzReader, err := gzip.NewReader(tmpFile)
@@ -841,7 +789,7 @@ func (g *GeoBlock) databaseUpdater(ctx context.Context) {
 func (g *GeoBlock) lookupLocalDatabase(ip string) string {
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
-		return "UNKNOWN"
+		return CountryUnknown
 	}
 
 	g.localDB.mu.RLock()
@@ -855,7 +803,7 @@ func (g *GeoBlock) lookupLocalDatabase(ip string) string {
 		}
 	}
 
-	return "UNKNOWN"
+	return CountryUnknown
 }
 
 func ipInRange(ip, start, end net.IP) bool {
@@ -1015,7 +963,9 @@ func (ma *metricsAggregator) flush() {
 
 	// Sync to disk
 	if ma.logFile != nil {
-		ma.logFile.Sync()
+		if err := ma.logFile.Sync(); err != nil {
+			fmt.Printf("[GeoBlock] Error syncing log file: %v\n", err)
+		}
 	}
 }
 
@@ -1082,7 +1032,7 @@ func (pm *prometheusMetrics) increment(country, organization, action string) {
 	pm.counters[key]++
 }
 
-func (g *GeoBlock) servePrometheusMetrics(rw http.ResponseWriter, req *http.Request) {
+func (g *GeoBlock) servePrometheusMetrics(rw http.ResponseWriter) {
 	if g.promMetrics == nil {
 		http.Error(rw, "Metrics not enabled", http.StatusNotFound)
 		return
@@ -1092,7 +1042,9 @@ func (g *GeoBlock) servePrometheusMetrics(rw http.ResponseWriter, req *http.Requ
 
 	rw.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	rw.WriteHeader(http.StatusOK)
-	rw.Write([]byte(metrics))
+	if _, err := rw.Write([]byte(metrics)); err != nil {
+		fmt.Printf("[GeoBlock] Error writing metrics response: %v\n", err)
+	}
 }
 
 func (pm *prometheusMetrics) render() string {
