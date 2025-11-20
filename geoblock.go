@@ -23,6 +23,10 @@ const (
 	CountryUnknown = "UNKNOWN"
 	// DefaultActionAllow represents the default allow action
 	DefaultActionAllow = "allow"
+	// ActionAllow represents the allow action
+	ActionAllow = "allow"
+	// ActionBlock represents the block action
+	ActionBlock = "block"
 )
 
 // Config holds the plugin configuration
