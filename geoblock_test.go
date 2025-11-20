@@ -18,7 +18,7 @@ func TestCreateConfig(t *testing.T) {
 		t.Errorf("Expected CacheDuration to be 60, got %d", config.CacheDuration)
 	}
 
-	if config.DefaultAction != "allow" {
+	if config.DefaultAction != ActionAllow {
 		t.Errorf("Expected DefaultAction to be 'allow', got %s", config.DefaultAction)
 	}
 }
@@ -154,7 +154,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Allowlist - Country allowed",
 			allowedCountries: []string{"US", "CA"},
 			blockedCountries: []string{},
-			defaultAction:    "allow",
+			defaultAction:    ActionAllow,
 			country:          "US",
 			expected:         false,
 		},
@@ -162,7 +162,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Allowlist - Country not allowed",
 			allowedCountries: []string{"US", "CA"},
 			blockedCountries: []string{},
-			defaultAction:    "allow",
+			defaultAction:    ActionAllow,
 			country:          "CN",
 			expected:         true,
 		},
@@ -170,7 +170,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Blocklist - Country blocked",
 			allowedCountries: []string{},
 			blockedCountries: []string{"CN", "RU"},
-			defaultAction:    "allow",
+			defaultAction:    ActionAllow,
 			country:          "CN",
 			expected:         true,
 		},
@@ -178,7 +178,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Blocklist - Country not blocked",
 			allowedCountries: []string{},
 			blockedCountries: []string{"CN", "RU"},
-			defaultAction:    "allow",
+			defaultAction:    ActionAllow,
 			country:          "US",
 			expected:         false,
 		},
@@ -186,7 +186,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Default block",
 			allowedCountries: []string{},
 			blockedCountries: []string{},
-			defaultAction:    "block",
+			defaultAction:    ActionBlock,
 			country:          "US",
 			expected:         true,
 		},
@@ -194,7 +194,7 @@ func TestShouldBlock(t *testing.T) {
 			name:             "Default allow",
 			allowedCountries: []string{},
 			blockedCountries: []string{},
-			defaultAction:    "allow",
+			defaultAction:    ActionAllow,
 			country:          "US",
 			expected:         false,
 		},
