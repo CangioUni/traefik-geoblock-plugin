@@ -1,33 +1,24 @@
+version: 2
+
 run:
   timeout: 5m
   go: '1.21'
   tests: true
-  skip-dirs:
-    - vendor
-    - .github
 
 linters:
   enable:
     # region - default linters
     - errcheck      # Check for unchecked errors
-    - gosimple      # Simplify code
     - govet         # Vet examines Go source code
     - ineffassign   # Detect ineffectual assignments
     - staticcheck   # Static analysis checks
-    - typecheck     # Type-check Go code
     - unused        # Check for unused code
     # endregion - default linters
 
     # region - additional linters
-    - gofmt         # Check formatting
-    - gofumpt       # Stricter gofmt
-    - goimports     # Check import formatting
     - cyclop        # Check cyclomatic complexity
-    - whitespace    # Check whitespace
     - decorder      # Check declaration order
-    - exportloopref # Check for exported loop vars
     - funlen        # Check function length
-    - gci           # Control import order
     - goconst       # Find repeated strings
     - gocritic      # Opinionated Go linter
     - gosec         # Security checker
@@ -35,8 +26,14 @@ linters:
     - nilnil        # Check returning nil nil
     - unconvert     # Remove unnecessary type conversions
     - unparam       # Find unused function parameters
-    - usestdlibvars # Suggest stdlib variables
     # endregion - additional linters
+
+formatters:
+  enable:
+    - gofmt         # Check formatting
+    - gofumpt       # Stricter gofmt
+    - goimports     # Check import formatting
+    - gci           # Control import order
 
 linters-settings:
   gofumpt:
@@ -65,6 +62,10 @@ linters-settings:
       - prefix(github.com/CangioUni/traefik-geoblock-plugin)
 
 issues:
+  exclude-dirs:
+    - vendor
+    - .github
+
   exclude-rules:
     # Exclude some linters from running on tests files
     - path: _test\.go
