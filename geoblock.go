@@ -172,45 +172,11 @@ type prometheusMetrics struct {
 
 // New creates a new GeoBlock plugin
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	if config.QueryURL == "" {
-		config.QueryURL = "https://ipapi.co/{ip}/json/"
-	}
+	setConfigDefaults(config)
 
-	if config.DatabasePath == "" {
-		config.DatabasePath = "/tmp/ipinfo_lite.json"
-	}
-
-	if config.CacheDuration <= 0 {
-		config.CacheDuration = 60
-	}
-
-	if config.DefaultAction != DefaultActionAllow && config.DefaultAction != "block" {
-		config.DefaultAction = DefaultActionAllow
-	}
-
-	if config.BlockMessage == "" {
-		config.BlockMessage = "Access denied from your country"
-	}
-
-	if config.BlockPageTitle == "" {
-		config.BlockPageTitle = "Access Denied"
-	}
-
-	// Create maps for faster lookup
-	allowedCountries := make(map[string]bool)
-	for _, country := range config.AllowedCountries {
-		allowedCountries[strings.ToUpper(country)] = true
-	}
-
-	blockedCountries := make(map[string]bool)
-	for _, country := range config.BlockedCountries {
-		blockedCountries[strings.ToUpper(country)] = true
-	}
-
-	trustedProxies := make(map[string]bool)
-	for _, proxy := range config.TrustedProxies {
-		trustedProxies[proxy] = true
-	}
+	allowedCountries := parseCountryList(config.AllowedCountries)
+	blockedCountries := parseCountryList(config.BlockedCountries)
+	trustedProxies := parseTrustedProxies(config.TrustedProxies)
 
 	gb := &GeoBlock{
 		next:             next,
@@ -222,6 +188,87 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		trustedProxies:   trustedProxies,
 	}
 
+	if err := initializeMetrics(ctx, config, gb); err != nil {
+		return nil, err
+	}
+
+	initializeLocalDatabase(ctx, config, gb)
+
+	return gb, nil
+}
+
+// setConfigDefaults sets default values for configuration options
+func setConfigDefaults(config *Config) {
+	if config.QueryURL == "" {
+		config.QueryURL = "https://ipapi.co/{ip}/json/"
+	}
+	if config.DatabasePath == "" {
+		config.DatabasePath = "/tmp/ipinfo_lite.json"
+	}
+	if config.CacheDuration <= 0 {
+		config.CacheDuration = 60
+	}
+	if config.DefaultAction != DefaultActionAllow && config.DefaultAction != "block" {
+		config.DefaultAction = DefaultActionAllow
+	}
+	if config.BlockMessage == "" {
+		config.BlockMessage = "Access denied from your country"
+	}
+	if config.BlockPageTitle == "" {
+		config.BlockPageTitle = "Access Denied"
+	}
+}
+
+// parseCountryList parses a list of country codes, supporting comma-separated values
+func parseCountryList(countries []string) map[string]bool {
+	countryMap := make(map[string]bool)
+	for _, country := range countries {
+		// Support comma-separated country codes in a single string
+		if strings.Contains(country, ",") {
+			for _, c := range strings.Split(country, ",") {
+				c = strings.TrimSpace(c)
+				if c != "" {
+					countryMap[strings.ToUpper(c)] = true
+				}
+			}
+		} else {
+			countryMap[strings.ToUpper(country)] = true
+		}
+	}
+	return countryMap
+}
+
+// parseTrustedProxies parses trusted proxy configuration, including Cloudflare support
+func parseTrustedProxies(proxies []string) map[string]bool {
+	trustedProxies := make(map[string]bool)
+	cloudflareEnabled := false
+
+	for _, proxy := range proxies {
+		if strings.ToLower(strings.TrimSpace(proxy)) == "cloudflare" {
+			cloudflareEnabled = true
+		} else {
+			trustedProxies[proxy] = true
+		}
+	}
+
+	// Fetch Cloudflare IPs if requested
+	if cloudflareEnabled {
+		cloudflareIPs, err := fetchCloudflareIPs()
+		if err != nil {
+			fmt.Printf("[GeoBlock] Warning: Failed to fetch Cloudflare IPs: %v. Continuing without them.\n", err)
+		} else {
+			for _, ip := range cloudflareIPs {
+				trustedProxies[ip] = true
+			}
+			fmt.Printf("[GeoBlock] Loaded %d Cloudflare IP ranges as trusted proxies\n", len(cloudflareIPs))
+		}
+	}
+
+	return trustedProxies
+}
+
+// initializeMetrics initializes Prometheus and legacy JSON metrics
+func initializeMetrics(ctx context.Context, config *Config, gb *GeoBlock) error {
 	// Initialize Prometheus metrics if path is configured
 	if config.PrometheusMetricsPath != "" {
 		gb.promMetrics = &prometheusMetrics{
@@ -241,7 +288,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 		aggregator, err := newMetricsAggregator(config.MetricsLogPath, config.MetricsFlushSeconds, config.LogRetentionDays)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize metrics aggregator: %w", err)
+			return fmt.Errorf("failed to initialize metrics aggregator: %w", err)
 		}
 		gb.metricsAggregator = aggregator
 
@@ -249,26 +296,30 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		go gb.metricsAggregator.startFlusher(ctx)
 	}
 
-	// Initialize local database if configured
-	if config.DatabaseURL != "" {
-		gb.localDB = &localDatabase{
-			downloadURL: config.DatabaseURL,
-			filePath:    config.DatabasePath,
-			ranges:      make([]ipRange, 0),
-		}
+	return nil
+}
 
-		// Initial database load
-		if err := gb.loadLocalDatabase(); err != nil {
-			fmt.Printf("[GeoBlock] Warning: Failed to load local database: %v. Will use query API as fallback.\n", err)
-		} else {
-			fmt.Printf("[GeoBlock] Local database loaded successfully with %d IP ranges\n", len(gb.localDB.ranges))
-		}
-
-		// Start background updater
-		go gb.databaseUpdater(ctx)
+// initializeLocalDatabase initializes the local GeoIP database if configured
+func initializeLocalDatabase(ctx context.Context, config *Config, gb *GeoBlock) {
+	if config.DatabaseURL == "" {
+		return
 	}
 
-	return gb, nil
+	gb.localDB = &localDatabase{
+		downloadURL: config.DatabaseURL,
+		filePath:    config.DatabasePath,
+		ranges:      make([]ipRange, 0),
+	}
+
+	// Initial database load
+	if err := gb.loadLocalDatabase(); err != nil {
+		fmt.Printf("[GeoBlock] Warning: Failed to load local database: %v. Will use query API as fallback.\n", err)
+	} else {
+		fmt.Printf("[GeoBlock] Local database loaded successfully with %d IP ranges\n", len(gb.localDB.ranges))
+	}
+
+	// Start background updater
+	go gb.databaseUpdater(ctx)
 }
 
 func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
@@ -323,7 +374,7 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 		// Get the first non-trusted proxy IP
 		for _, ip := range ips {
 			ip = strings.TrimSpace(ip)
-			if !g.trustedProxies[ip] && net.ParseIP(ip) != nil {
+			if !g.isTrustedProxy(ip) && net.ParseIP(ip) != nil {
 				return ip
 			}
 		}
@@ -340,6 +391,35 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 		return req.RemoteAddr
 	}
 	return host
+}
+
+func (g *GeoBlock) isTrustedProxy(ip string) bool {
+	// Check exact match first (for backward compatibility and performance)
+	if g.trustedProxies[ip] {
+		return true
+	}
+
+	// Parse the IP
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+
+	// Check if IP is within any trusted CIDR range
+	for proxyRange := range g.trustedProxies {
+		// Check if it's a CIDR range
+		if strings.Contains(proxyRange, "/") {
+			_, network, err := net.ParseCIDR(proxyRange)
+			if err != nil {
+				continue
+			}
+			if network.Contains(parsedIP) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
@@ -1096,4 +1176,49 @@ func escapePrometheusLabel(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return s
+}
+
+// fetchCloudflareIPs fetches the list of Cloudflare IP ranges from their official endpoints
+func fetchCloudflareIPs() ([]string, error) {
+	var allIPs []string
+
+	// Cloudflare's official IP list endpoints
+	urls := []string{
+		"https://www.cloudflare.com/ips-v4",
+		"https://www.cloudflare.com/ips-v6",
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	for _, url := range urls {
+		resp, err := client.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch Cloudflare IPs from %s: %w", url, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("Cloudflare IP endpoint returned status %d for %s", resp.StatusCode, url)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Cloudflare IP response: %w", err)
+		}
+
+		// Parse the response (one IP range per line)
+		lines := strings.Split(string(body), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				allIPs = append(allIPs, line)
+			}
+		}
+	}
+
+	if len(allIPs) == 0 {
+		return nil, fmt.Errorf("no Cloudflare IPs found")
+	}
+
+	return allIPs, nil
 }

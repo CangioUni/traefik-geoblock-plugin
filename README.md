@@ -20,14 +20,14 @@ A Traefik middleware plugin that blocks or allows traffic based on the geographi
 
 | Option | Type | Required | Default | Description |
 |--------|------|----------|---------|-------------|
-| `allowedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to allow (e.g., US, GB, DE) |
-| `blockedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to block |
+| `allowedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to allow (e.g., US, GB, DE). Supports comma-separated values in a single string (e.g., "IT,US,DE") |
+| `blockedCountries` | []string | No | [] | List of ISO 3166-1 alpha-2 country codes to block. Supports comma-separated values in a single string (e.g., "CN,RU,KP") |
 | `queryURL` | string | No | `https://ipapi.co/{ip}/json/` | GeoIP lookup API URL (use `{ip}` placeholder) |
 | `cacheDuration` | int | No | 60 | Cache duration in minutes |
 | `defaultAction` | string | No | allow | Default action for unknown countries: `allow` or `block` |
 | `blockMessage` | string | No | Access denied from your country | Message shown to blocked users |
 | `logBlocked` | bool | No | true | Legacy stdout logging (includes IPs) |
-| `trustedProxies` | []string | No | [] | List of trusted proxy IP addresses/ranges |
+| `trustedProxies` | []string | No | [] | List of trusted proxy IP addresses/CIDR ranges. Use "cloudflare" to automatically fetch and trust Cloudflare IP ranges |
 
 ### Grafana Metrics Options
 
@@ -153,6 +153,23 @@ http:
             - "10.0.0.0/8"
             - "172.16.0.0/12"
             - "192.168.0.0/16"
+          logBlocked: true
+```
+
+### Example 4a: With Cloudflare Proxy Support
+
+Automatically trust Cloudflare IP ranges when using Cloudflare as a reverse proxy:
+
+```yaml
+http:
+  middlewares:
+    geoblock-cloudflare:
+      plugin:
+        geoblock:
+          allowedCountries:
+            - "IT,US,DE"  # Comma-separated format
+          trustedProxies:
+            - "cloudflare"  # Automatically fetches Cloudflare IP ranges
           logBlocked: true
 ```
 

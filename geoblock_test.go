@@ -283,3 +283,157 @@ func TestServeHTTP(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", rw.Code)
 	}
 }
+
+func TestCommaSeparatedCountries(t *testing.T) {
+	testCases := []struct {
+		name             string
+		allowedCountries []string
+		country          string
+		shouldBlock      bool
+	}{
+		{
+			name:             "Comma-separated allowed countries - match first",
+			allowedCountries: []string{"IT,US,DE"},
+			country:          "IT",
+			shouldBlock:      false,
+		},
+		{
+			name:             "Comma-separated allowed countries - match middle",
+			allowedCountries: []string{"IT,US,DE"},
+			country:          "US",
+			shouldBlock:      false,
+		},
+		{
+			name:             "Comma-separated allowed countries - match last",
+			allowedCountries: []string{"IT,US,DE"},
+			country:          "DE",
+			shouldBlock:      false,
+		},
+		{
+			name:             "Comma-separated allowed countries - no match",
+			allowedCountries: []string{"IT,US,DE"},
+			country:          "FR",
+			shouldBlock:      true,
+		},
+		{
+			name:             "Mixed format - array and comma-separated",
+			allowedCountries: []string{"IT,US", "DE", "FR"},
+			country:          "US",
+			shouldBlock:      false,
+		},
+		{
+			name:             "Comma-separated with spaces",
+			allowedCountries: []string{"IT, US, DE"},
+			country:          "US",
+			shouldBlock:      false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := CreateConfig()
+			config.AllowedCountries = tc.allowedCountries
+
+			next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+			handler, err := New(context.Background(), next, config, "test")
+			if err != nil {
+				t.Fatalf("Failed to create plugin: %v", err)
+			}
+
+			geoBlock := handler.(*GeoBlock)
+			result := geoBlock.shouldBlock(tc.country)
+
+			if result != tc.shouldBlock {
+				t.Errorf("Expected shouldBlock to return %v for country %s, got %v", tc.shouldBlock, tc.country, result)
+			}
+		})
+	}
+}
+
+func TestTrustedProxyCIDR(t *testing.T) {
+	config := CreateConfig()
+	config.TrustedProxies = []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.1.0/24",
+	}
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	handler, err := New(context.Background(), next, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create plugin: %v", err)
+	}
+
+	geoBlock := handler.(*GeoBlock)
+
+	testCases := []struct {
+		ip       string
+		expected bool
+	}{
+		{"10.0.0.1", true},
+		{"10.255.255.255", true},
+		{"172.16.0.1", true},
+		{"172.31.255.255", true},
+		{"192.168.1.100", true},
+		{"192.168.2.1", false},
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.ip, func(t *testing.T) {
+			result := geoBlock.isTrustedProxy(tc.ip)
+			if result != tc.expected {
+				t.Errorf("isTrustedProxy(%s) = %v, expected %v", tc.ip, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestGetClientIPWithCIDRProxies(t *testing.T) {
+	config := CreateConfig()
+	config.TrustedProxies = []string{"10.0.0.0/8", "172.16.0.0/12"}
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {})
+	handler, err := New(context.Background(), next, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create plugin: %v", err)
+	}
+
+	geoBlock := handler.(*GeoBlock)
+
+	testCases := []struct {
+		name     string
+		remoteIP string
+		xff      string
+		expected string
+	}{
+		{
+			name:     "X-Forwarded-For with trusted CIDR proxy",
+			remoteIP: "10.0.1.1:1234",
+			xff:      "5.6.7.8, 10.0.2.1",
+			expected: "5.6.7.8",
+		},
+		{
+			name:     "X-Forwarded-For multiple trusted proxies",
+			remoteIP: "172.16.1.1:1234",
+			xff:      "1.2.3.4, 10.5.6.7, 172.20.0.1",
+			expected: "1.2.3.4",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com", nil)
+			req.RemoteAddr = tc.remoteIP
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+
+			result := geoBlock.getClientIP(req)
+			if result != tc.expected {
+				t.Errorf("Expected IP %s, got %s", tc.expected, result)
+			}
+		})
+	}
+}
