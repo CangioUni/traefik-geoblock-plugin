@@ -199,17 +199,56 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	// Create maps for faster lookup
 	allowedCountries := make(map[string]bool)
 	for _, country := range config.AllowedCountries {
-		allowedCountries[strings.ToUpper(country)] = true
+		// Support comma-separated country codes in a single string
+		if strings.Contains(country, ",") {
+			for _, c := range strings.Split(country, ",") {
+				c = strings.TrimSpace(c)
+				if c != "" {
+					allowedCountries[strings.ToUpper(c)] = true
+				}
+			}
+		} else {
+			allowedCountries[strings.ToUpper(country)] = true
+		}
 	}
 
 	blockedCountries := make(map[string]bool)
 	for _, country := range config.BlockedCountries {
-		blockedCountries[strings.ToUpper(country)] = true
+		// Support comma-separated country codes in a single string
+		if strings.Contains(country, ",") {
+			for _, c := range strings.Split(country, ",") {
+				c = strings.TrimSpace(c)
+				if c != "" {
+					blockedCountries[strings.ToUpper(c)] = true
+				}
+			}
+		} else {
+			blockedCountries[strings.ToUpper(country)] = true
+		}
 	}
 
 	trustedProxies := make(map[string]bool)
+	// Check if Cloudflare IPs should be fetched
+	cloudflareEnabled := false
 	for _, proxy := range config.TrustedProxies {
-		trustedProxies[proxy] = true
+		if strings.ToLower(strings.TrimSpace(proxy)) == "cloudflare" {
+			cloudflareEnabled = true
+		} else {
+			trustedProxies[proxy] = true
+		}
+	}
+
+	// Fetch Cloudflare IPs if requested
+	if cloudflareEnabled {
+		cloudflareIPs, err := fetchCloudflareIPs()
+		if err != nil {
+			fmt.Printf("[GeoBlock] Warning: Failed to fetch Cloudflare IPs: %v. Continuing without them.\n", err)
+		} else {
+			for _, ip := range cloudflareIPs {
+				trustedProxies[ip] = true
+			}
+			fmt.Printf("[GeoBlock] Loaded %d Cloudflare IP ranges as trusted proxies\n", len(cloudflareIPs))
+		}
 	}
 
 	gb := &GeoBlock{
@@ -323,7 +362,7 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 		// Get the first non-trusted proxy IP
 		for _, ip := range ips {
 			ip = strings.TrimSpace(ip)
-			if !g.trustedProxies[ip] && net.ParseIP(ip) != nil {
+			if !g.isTrustedProxy(ip) && net.ParseIP(ip) != nil {
 				return ip
 			}
 		}
@@ -340,6 +379,35 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 		return req.RemoteAddr
 	}
 	return host
+}
+
+func (g *GeoBlock) isTrustedProxy(ip string) bool {
+	// Check exact match first (for backward compatibility and performance)
+	if g.trustedProxies[ip] {
+		return true
+	}
+
+	// Parse the IP
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+
+	// Check if IP is within any trusted CIDR range
+	for proxyRange := range g.trustedProxies {
+		// Check if it's a CIDR range
+		if strings.Contains(proxyRange, "/") {
+			_, network, err := net.ParseCIDR(proxyRange)
+			if err != nil {
+				continue
+			}
+			if network.Contains(parsedIP) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
@@ -1096,4 +1164,49 @@ func escapePrometheusLabel(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return s
+}
+
+// fetchCloudflareIPs fetches the list of Cloudflare IP ranges from their official endpoints
+func fetchCloudflareIPs() ([]string, error) {
+	var allIPs []string
+
+	// Cloudflare's official IP list endpoints
+	urls := []string{
+		"https://www.cloudflare.com/ips-v4",
+		"https://www.cloudflare.com/ips-v6",
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	for _, url := range urls {
+		resp, err := client.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch Cloudflare IPs from %s: %w", url, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("Cloudflare IP endpoint returned status %d for %s", resp.StatusCode, url)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Cloudflare IP response: %w", err)
+		}
+
+		// Parse the response (one IP range per line)
+		lines := strings.Split(string(body), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				allIPs = append(allIPs, line)
+			}
+		}
+	}
+
+	if len(allIPs) == 0 {
+		return nil, fmt.Errorf("no Cloudflare IPs found")
+	}
+
+	return allIPs, nil
 }
