@@ -172,65 +172,78 @@ type prometheusMetrics struct {
 
 // New creates a new GeoBlock plugin
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	setConfigDefaults(config)
+
+	allowedCountries := parseCountryList(config.AllowedCountries)
+	blockedCountries := parseCountryList(config.BlockedCountries)
+	trustedProxies := parseTrustedProxies(config.TrustedProxies)
+
+	gb := &GeoBlock{
+		next:             next,
+		config:           config,
+		name:             name,
+		cache:            &geoCache{entries: make(map[string]*cacheEntry)},
+		allowedCountries: allowedCountries,
+		blockedCountries: blockedCountries,
+		trustedProxies:   trustedProxies,
+	}
+
+	if err := initializeMetrics(ctx, config, gb); err != nil {
+		return nil, err
+	}
+
+	initializeLocalDatabase(ctx, config, gb)
+
+	return gb, nil
+}
+
+// setConfigDefaults sets default values for configuration options
+func setConfigDefaults(config *Config) {
 	if config.QueryURL == "" {
 		config.QueryURL = "https://ipapi.co/{ip}/json/"
 	}
-
 	if config.DatabasePath == "" {
 		config.DatabasePath = "/tmp/ipinfo_lite.json"
 	}
-
 	if config.CacheDuration <= 0 {
 		config.CacheDuration = 60
 	}
-
 	if config.DefaultAction != DefaultActionAllow && config.DefaultAction != "block" {
 		config.DefaultAction = DefaultActionAllow
 	}
-
 	if config.BlockMessage == "" {
 		config.BlockMessage = "Access denied from your country"
 	}
-
 	if config.BlockPageTitle == "" {
 		config.BlockPageTitle = "Access Denied"
 	}
+}
 
-	// Create maps for faster lookup
-	allowedCountries := make(map[string]bool)
-	for _, country := range config.AllowedCountries {
+// parseCountryList parses a list of country codes, supporting comma-separated values
+func parseCountryList(countries []string) map[string]bool {
+	countryMap := make(map[string]bool)
+	for _, country := range countries {
 		// Support comma-separated country codes in a single string
 		if strings.Contains(country, ",") {
 			for _, c := range strings.Split(country, ",") {
 				c = strings.TrimSpace(c)
 				if c != "" {
-					allowedCountries[strings.ToUpper(c)] = true
+					countryMap[strings.ToUpper(c)] = true
 				}
 			}
 		} else {
-			allowedCountries[strings.ToUpper(country)] = true
+			countryMap[strings.ToUpper(country)] = true
 		}
 	}
+	return countryMap
+}
 
-	blockedCountries := make(map[string]bool)
-	for _, country := range config.BlockedCountries {
-		// Support comma-separated country codes in a single string
-		if strings.Contains(country, ",") {
-			for _, c := range strings.Split(country, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					blockedCountries[strings.ToUpper(c)] = true
-				}
-			}
-		} else {
-			blockedCountries[strings.ToUpper(country)] = true
-		}
-	}
-
+// parseTrustedProxies parses trusted proxy configuration, including Cloudflare support
+func parseTrustedProxies(proxies []string) map[string]bool {
 	trustedProxies := make(map[string]bool)
-	// Check if Cloudflare IPs should be fetched
 	cloudflareEnabled := false
-	for _, proxy := range config.TrustedProxies {
+
+	for _, proxy := range proxies {
 		if strings.ToLower(strings.TrimSpace(proxy)) == "cloudflare" {
 			cloudflareEnabled = true
 		} else {
@@ -251,16 +264,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		}
 	}
 
-	gb := &GeoBlock{
-		next:             next,
-		config:           config,
-		name:             name,
-		cache:            &geoCache{entries: make(map[string]*cacheEntry)},
-		allowedCountries: allowedCountries,
-		blockedCountries: blockedCountries,
-		trustedProxies:   trustedProxies,
-	}
+	return trustedProxies
+}
 
+// initializeMetrics initializes Prometheus and legacy JSON metrics
+func initializeMetrics(ctx context.Context, config *Config, gb *GeoBlock) error {
 	// Initialize Prometheus metrics if path is configured
 	if config.PrometheusMetricsPath != "" {
 		gb.promMetrics = &prometheusMetrics{
@@ -280,7 +288,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 		aggregator, err := newMetricsAggregator(config.MetricsLogPath, config.MetricsFlushSeconds, config.LogRetentionDays)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize metrics aggregator: %w", err)
+			return fmt.Errorf("failed to initialize metrics aggregator: %w", err)
 		}
 		gb.metricsAggregator = aggregator
 
@@ -288,26 +296,30 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		go gb.metricsAggregator.startFlusher(ctx)
 	}
 
-	// Initialize local database if configured
-	if config.DatabaseURL != "" {
-		gb.localDB = &localDatabase{
-			downloadURL: config.DatabaseURL,
-			filePath:    config.DatabasePath,
-			ranges:      make([]ipRange, 0),
-		}
+	return nil
+}
 
-		// Initial database load
-		if err := gb.loadLocalDatabase(); err != nil {
-			fmt.Printf("[GeoBlock] Warning: Failed to load local database: %v. Will use query API as fallback.\n", err)
-		} else {
-			fmt.Printf("[GeoBlock] Local database loaded successfully with %d IP ranges\n", len(gb.localDB.ranges))
-		}
-
-		// Start background updater
-		go gb.databaseUpdater(ctx)
+// initializeLocalDatabase initializes the local GeoIP database if configured
+func initializeLocalDatabase(ctx context.Context, config *Config, gb *GeoBlock) {
+	if config.DatabaseURL == "" {
+		return
 	}
 
-	return gb, nil
+	gb.localDB = &localDatabase{
+		downloadURL: config.DatabaseURL,
+		filePath:    config.DatabasePath,
+		ranges:      make([]ipRange, 0),
+	}
+
+	// Initial database load
+	if err := gb.loadLocalDatabase(); err != nil {
+		fmt.Printf("[GeoBlock] Warning: Failed to load local database: %v. Will use query API as fallback.\n", err)
+	} else {
+		fmt.Printf("[GeoBlock] Local database loaded successfully with %d IP ranges\n", len(gb.localDB.ranges))
+	}
+
+	// Start background updater
+	go gb.databaseUpdater(ctx)
 }
 
 func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
