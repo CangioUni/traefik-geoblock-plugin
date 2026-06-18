@@ -335,6 +335,12 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// If the resolved client IP is a trusted proxy, bypass geoblocking
+	if g.isTrustedProxy(ip) {
+		g.next.ServeHTTP(rw, req)
+		return
+	}
+
 	geoInfo, err := g.getGeoInfo(ip)
 	if err != nil {
 		if g.config.LogBlocked {
