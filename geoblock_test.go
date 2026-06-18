@@ -284,6 +284,61 @@ func TestServeHTTP(t *testing.T) {
 	}
 }
 
+func TestServeHTTPTrustedProxyBypass(t *testing.T) {
+	config := CreateConfig()
+	// Block all requests by default
+	config.DefaultAction = ActionBlock
+	config.TrustedProxies = []string{"10.0.0.0/8", "192.168.1.5"}
+
+	nextCalled := false
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		nextCalled = true
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), next, config, "test")
+	if err != nil {
+		t.Fatalf("Failed to create plugin: %v", err)
+	}
+
+	testCases := []struct {
+		name       string
+		remoteAddr string
+		shouldPass bool
+	}{
+		{
+			name:       "Trusted proxy CIDR bypass",
+			remoteAddr: "10.1.2.3:1234",
+			shouldPass: true,
+		},
+		{
+			name:       "Trusted proxy exact IP bypass",
+			remoteAddr: "192.168.1.5:1234",
+			shouldPass: true,
+		},
+		{
+			name:       "Untrusted private IP blocked",
+			remoteAddr: "172.16.0.1:1234",
+			shouldPass: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			nextCalled = false
+			req := httptest.NewRequest("GET", "http://example.com", nil)
+			req.RemoteAddr = tc.remoteAddr
+			rw := httptest.NewRecorder()
+
+			handler.ServeHTTP(rw, req)
+
+			if nextCalled != tc.shouldPass {
+				t.Errorf("Expected bypass=%v, but got bypass=%v for %s", tc.shouldPass, nextCalled, tc.remoteAddr)
+			}
+		})
+	}
+}
+
 func TestCommaSeparatedCountries(t *testing.T) {
 	testCases := []struct {
 		name             string
