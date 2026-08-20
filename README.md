@@ -26,8 +26,8 @@ A Traefik middleware plugin that blocks or allows traffic based on the geographi
 | `cacheDuration` | int | No | 60 | Cache duration in minutes |
 | `defaultAction` | string | No | allow | Default action for unknown countries: `allow` or `block` |
 | `blockMessage` | string | No | Access denied from your country | Message shown to blocked users |
-| `logBlocked` | bool | No | true | Legacy stdout logging (includes IPs) |
-| `trustedProxies` | []string | No | [] | List of trusted proxy IP addresses/CIDR ranges. Use "cloudflare" to automatically fetch and trust Cloudflare IP ranges |
+| `logLevel` | string | No | info | Logging level: `debug`, `info`, `warning` |
+| `trustedProxies` | []string | No | [] | List of trusted proxy IP addresses/CIDR ranges. Use "cloudflare" to automatically fetch and trust Cloudflare IP ranges. Note: Requests from direct IPs matching trusted proxies bypass the country block. |
 
 ### Grafana Metrics Options
 
@@ -90,7 +90,7 @@ http:
             - IT
             - DE
           blockMessage: "Access is only available from US, CA, and GB"
-          logBlocked: true
+          logLevel: "info"
 
   routers:
     my-router:
@@ -116,7 +116,7 @@ http:
             - KP
           defaultAction: allow
           blockMessage: "Access from your region is restricted"
-          logBlocked: true
+          logLevel: "info"
 ```
 
 ### Example 3: Strict Mode (Block All Except Allowed)
@@ -153,7 +153,7 @@ http:
             - "10.0.0.0/8"
             - "172.16.0.0/12"
             - "192.168.0.0/16"
-          logBlocked: true
+          logLevel: "debug"
 ```
 
 ### Example 4a: With Cloudflare Proxy Support
@@ -170,7 +170,7 @@ http:
             - "IT,US,DE"  # Comma-separated format
           trustedProxies:
             - "cloudflare"  # Automatically fetches Cloudflare IP ranges
-          logBlocked: true
+          logLevel: "info"
 ```
 
 ### Example 5: With Grafana Metrics
@@ -191,8 +191,7 @@ http:
           metricsLogPath: "/var/log/traefik-geoblock/metrics.log"
           metricsFlushSeconds: 60
           logRetentionDays: 14
-          # Disable IP logging for privacy
-          logBlocked: false
+          logLevel: "warning"
 ```
 
 See [GRAFANA-METRICS.md](GRAFANA-METRICS.md) for complete setup instructions and dashboard examples.
@@ -297,7 +296,7 @@ curl -H "X-Forwarded-For: 1.2.4.8" http://whoami.localhost
 
 ### Requests Not Being Blocked
 
-- Enable `logBlocked: true` to see what's happening
+- Set `logLevel: "debug"` to see what's happening
 - Check if IP is being correctly extracted (review logs)
 - Verify country codes are uppercase (e.g., `US` not `us`)
 

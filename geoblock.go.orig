@@ -525,7 +525,6 @@ func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query geo IP: %w", err)
 	}
-	g.log("info", "Queried API endpoint: %s", url)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
