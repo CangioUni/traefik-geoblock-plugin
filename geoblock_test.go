@@ -144,10 +144,10 @@ func TestGetClientIP(t *testing.T) {
 func TestShouldBlock(t *testing.T) {
 	testCases := []struct {
 		name             string
-		allowedCountries []string
-		blockedCountries []string
 		defaultAction    string
 		country          string
+		allowedCountries []string
+		blockedCountries []string
 		expected         bool
 	}{
 		{
@@ -287,8 +287,8 @@ func TestServeHTTP(t *testing.T) {
 func TestCommaSeparatedCountries(t *testing.T) {
 	testCases := []struct {
 		name             string
-		allowedCountries []string
 		country          string
+		allowedCountries []string
 		shouldBlock      bool
 	}{
 		{
@@ -435,5 +435,32 @@ func TestGetClientIPWithCIDRProxies(t *testing.T) {
 				t.Errorf("Expected IP %s, got %s", tc.expected, result)
 			}
 		})
+	}
+}
+
+func TestTrustedProxyBypass(t *testing.T) {
+	config := CreateConfig()
+	config.BlockedCountries = []string{"US"} // Assume we block US
+	config.TrustedProxies = []string{"192.168.1.1"}
+	config.LogLevel = "debug"
+
+	nextCalled := false
+	nextHandler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		nextCalled = true
+	})
+
+	// Since 192.168.1.1 is private IP, it normally resolves to PRIVATE and is allowed.
+	// Let's use a public IP as trusted proxy.
+	config.TrustedProxies = []string{"8.8.8.8"}
+	handler, _ := New(context.Background(), nextHandler, config, "test")
+
+	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if !nextCalled {
+		t.Error("Next handler should have been called for trusted proxy bypassing country block")
 	}
 }

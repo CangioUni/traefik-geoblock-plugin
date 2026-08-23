@@ -27,28 +27,31 @@ const (
 	ActionAllow = "allow"
 	// ActionBlock represents the block action
 	ActionBlock = "block"
+
+	LevelInfo    = "info"
+	LevelWarning = "warning"
 )
 
 // Config holds the plugin configuration
 type Config struct {
-	AllowedCountries      []string `json:"allowedCountries,omitempty"`
-	BlockedCountries      []string `json:"blockedCountries,omitempty"`
-	QueryURL              string   `json:"queryURL,omitempty"`      // API endpoint for querying (e.g., https://ipapi.co/{ip}/json/)
-	DatabaseURL           string   `json:"databaseURL,omitempty"`   // URL to download local database (e.g., https://ipinfo.io/data/ipinfo_lite.json.gz?token=TOKEN)
-	DatabasePath          string   `json:"databasePath,omitempty"`  // Path to store local database
-	CacheDuration         int      `json:"cacheDuration,omitempty"` // in minutes
-	DefaultAction         string   `json:"defaultAction,omitempty"` // "allow" or "block"
-	BlockMessage          string   `json:"blockMessage,omitempty"`
 	BlockPageTitle        string   `json:"blockPageTitle,omitempty"`
+	MetricsLogPath        string   `json:"metricsLogPath,omitempty"`
+	QueryURL              string   `json:"queryURL,omitempty"`
+	DatabaseURL           string   `json:"databaseURL,omitempty"`
+	DatabasePath          string   `json:"databasePath,omitempty"`
+	PrometheusMetricsPath string   `json:"prometheusMetricsPath,omitempty"`
+	DefaultAction         string   `json:"defaultAction,omitempty"`
+	BlockMessage          string   `json:"blockMessage,omitempty"`
+	LogLevel              string   `json:"logLevel,omitempty"`
+	RedirectURL           string   `json:"redirectURL,omitempty"`
 	BlockPageBody         string   `json:"blockPageBody,omitempty"`
-	RedirectURL           string   `json:"redirectURL,omitempty"` // URL to redirect blocked users (optional)
-	LogBlocked            bool     `json:"logBlocked,omitempty"`  // Legacy logging (stdout with IPs)
+	BlockedCountries      []string `json:"blockedCountries,omitempty"`
 	TrustedProxies        []string `json:"trustedProxies,omitempty"`
-	MetricsLogPath        string   `json:"metricsLogPath,omitempty"`        // Path for Grafana-compatible metrics logs (deprecated, use PrometheusMetricsPath)
-	MetricsFlushSeconds   int      `json:"metricsFlushSeconds,omitempty"`   // How often to flush metrics (default: 60)
-	LogRetentionDays      int      `json:"logRetentionDays,omitempty"`      // Days to retain logs (default: 14)
-	EnableMetricsLog      bool     `json:"enableMetricsLog,omitempty"`      // Enable Grafana-compatible logging (deprecated, use PrometheusMetricsPath)
-	PrometheusMetricsPath string   `json:"prometheusMetricsPath,omitempty"` // Path to expose Prometheus metrics endpoint (e.g., "/__geoblock_metrics")
+	AllowedCountries      []string `json:"allowedCountries,omitempty"`
+	MetricsFlushSeconds   int      `json:"metricsFlushSeconds,omitempty"`
+	LogRetentionDays      int      `json:"logRetentionDays,omitempty"`
+	CacheDuration         int      `json:"cacheDuration,omitempty"`
+	EnableMetricsLog      bool     `json:"enableMetricsLog,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration
@@ -65,7 +68,7 @@ func CreateConfig() *Config {
 		BlockPageTitle:      "Access Denied",
 		BlockPageBody:       "",
 		RedirectURL:         "",
-		LogBlocked:          true,
+		LogLevel:            LevelInfo,
 		TrustedProxies:      []string{},
 		MetricsLogPath:      "/var/log/traefik-geoblock/metrics.log",
 		MetricsFlushSeconds: 60,
@@ -78,7 +81,6 @@ func CreateConfig() *Config {
 type GeoBlock struct {
 	next              http.Handler
 	config            *Config
-	name              string
 	cache             *geoCache
 	localDB           *localDatabase
 	allowedCountries  map[string]bool
@@ -86,31 +88,65 @@ type GeoBlock struct {
 	trustedProxies    map[string]bool
 	metricsAggregator *metricsAggregator
 	promMetrics       *prometheusMetrics
+	name              string
+}
+
+func (g *GeoBlock) log(level string, format string, v ...interface{}) {
+	configLevel := strings.ToLower(g.config.LogLevel)
+
+	// Determine if we should log based on level
+	shouldLog := false
+	switch configLevel {
+	case "debug":
+		// Debug logs everything
+		shouldLog = true
+	case LevelInfo:
+		// Info logs info and warning
+		if level == LevelInfo || level == LevelWarning {
+			shouldLog = true
+		}
+	case LevelWarning:
+		// Warning logs only warning
+		if level == LevelWarning {
+			shouldLog = true
+		}
+	default:
+		// Default to info behavior
+		if level == LevelInfo || level == LevelWarning {
+			shouldLog = true
+		}
+	}
+
+	if shouldLog {
+		timestamp := time.Now().UTC().Format(time.RFC3339)
+		msg := fmt.Sprintf(format, v...)
+		fmt.Printf("[%s] [GeoBlock] [%s] %s\n", timestamp, strings.ToUpper(level), msg)
+	}
 }
 
 type geoCache struct {
-	mu      sync.RWMutex
 	entries map[string]*cacheEntry
+	mu      sync.RWMutex
 }
 
 type cacheEntry struct {
+	expiresAt    time.Time
 	country      string
 	organization string
-	expiresAt    time.Time
 }
 
 type localDatabase struct {
-	mu          sync.RWMutex
-	ranges      []ipRange
 	lastUpdate  time.Time
 	downloadURL string
 	filePath    string
+	ranges      []ipRange
+	mu          sync.RWMutex
 }
 
 type ipRange struct {
+	country string
 	startIP net.IP
 	endIP   net.IP
-	country string
 }
 
 type ipInfoLiteEntry struct {
@@ -134,13 +170,13 @@ type ipAPIResponse struct {
 // Metrics structures for Grafana-compatible logging
 
 type metricsAggregator struct {
-	mu            sync.RWMutex
 	metrics       map[string]*metricEntry
+	logger        *log.Logger
+	logFile       *os.File
 	logPath       string
 	flushSeconds  int
 	retentionDays int
-	logger        *log.Logger
-	logFile       *os.File
+	mu            sync.RWMutex
 }
 
 type metricEntry struct {
@@ -166,8 +202,8 @@ type geoInfo struct {
 // Prometheus metrics structures for native Prometheus integration
 
 type prometheusMetrics struct {
+	counters map[string]int64
 	mu       sync.RWMutex
-	counters map[string]int64 // key: "country|organization|action"
 }
 
 // New creates a new GeoBlock plugin
@@ -176,7 +212,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	allowedCountries := parseCountryList(config.AllowedCountries)
 	blockedCountries := parseCountryList(config.BlockedCountries)
-	trustedProxies := parseTrustedProxies(config.TrustedProxies)
 
 	gb := &GeoBlock{
 		next:             next,
@@ -185,8 +220,10 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		cache:            &geoCache{entries: make(map[string]*cacheEntry)},
 		allowedCountries: allowedCountries,
 		blockedCountries: blockedCountries,
-		trustedProxies:   trustedProxies,
 	}
+
+	trustedProxies := gb.parseTrustedProxies(config.TrustedProxies)
+	gb.trustedProxies = trustedProxies
 
 	if err := initializeMetrics(ctx, config, gb); err != nil {
 		return nil, err
@@ -217,6 +254,9 @@ func setConfigDefaults(config *Config) {
 	if config.BlockPageTitle == "" {
 		config.BlockPageTitle = "Access Denied"
 	}
+	if config.LogLevel == "" {
+		config.LogLevel = LevelInfo
+	}
 }
 
 // parseCountryList parses a list of country codes, supporting comma-separated values
@@ -239,7 +279,7 @@ func parseCountryList(countries []string) map[string]bool {
 }
 
 // parseTrustedProxies parses trusted proxy configuration, including Cloudflare support
-func parseTrustedProxies(proxies []string) map[string]bool {
+func (g *GeoBlock) parseTrustedProxies(proxies []string) map[string]bool {
 	trustedProxies := make(map[string]bool)
 	cloudflareEnabled := false
 
@@ -255,12 +295,12 @@ func parseTrustedProxies(proxies []string) map[string]bool {
 	if cloudflareEnabled {
 		cloudflareIPs, err := fetchCloudflareIPs()
 		if err != nil {
-			fmt.Printf("[GeoBlock] Warning: Failed to fetch Cloudflare IPs: %v. Continuing without them.\n", err)
+			g.log(LevelWarning, "Failed to fetch Cloudflare IPs: %v. Continuing without them.", err)
 		} else {
 			for _, ip := range cloudflareIPs {
 				trustedProxies[ip] = true
 			}
-			fmt.Printf("[GeoBlock] Loaded %d Cloudflare IP ranges as trusted proxies\n", len(cloudflareIPs))
+			g.log(LevelInfo, "Loaded %d Cloudflare IP ranges as trusted proxies", len(cloudflareIPs))
 		}
 	}
 
@@ -274,7 +314,7 @@ func initializeMetrics(ctx context.Context, config *Config, gb *GeoBlock) error 
 		gb.promMetrics = &prometheusMetrics{
 			counters: make(map[string]int64),
 		}
-		fmt.Printf("[GeoBlock] Prometheus metrics enabled at path: %s\n", config.PrometheusMetricsPath)
+		gb.log(LevelInfo, "Prometheus metrics enabled at path: %s", config.PrometheusMetricsPath)
 	}
 
 	// Initialize metrics aggregator if enabled (legacy JSON logging)
@@ -313,9 +353,9 @@ func initializeLocalDatabase(ctx context.Context, config *Config, gb *GeoBlock) 
 
 	// Initial database load
 	if err := gb.loadLocalDatabase(); err != nil {
-		fmt.Printf("[GeoBlock] Warning: Failed to load local database: %v. Will use query API as fallback.\n", err)
+		gb.log(LevelWarning, "Failed to load local database: %v. Will use query API as fallback.", err)
 	} else {
-		fmt.Printf("[GeoBlock] Local database loaded successfully with %d IP ranges\n", len(gb.localDB.ranges))
+		gb.log(LevelInfo, "Local database loaded successfully with %d IP ranges", len(gb.localDB.ranges))
 	}
 
 	// Start background updater
@@ -335,26 +375,36 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	geoInfo, err := g.getGeoInfo(ip)
+	// Fast path: bypass if the resolved client IP is explicitly in a trusted proxy/allowed list
+	if g.isTrustedProxy(ip) {
+		g.log("debug", "Allowed request from IP %s (bypass via allowed/trusted proxy list)", ip)
+		g.next.ServeHTTP(rw, req)
+		return
+	}
+
+	geoInfo, isCached, err := g.getGeoInfo(ip)
 	if err != nil {
-		if g.config.LogBlocked {
-			fmt.Printf("[GeoBlock] Error getting country for IP %s: %v\n", ip, err)
-		}
+		g.log(LevelWarning, "Error getting country for IP %s: %v", ip, err)
 		// On error, apply default action
 		if g.config.DefaultAction == "block" {
-			g.blockRequest(rw, CountryUnknown, "")
+			g.log("debug", "Request from IP %s - Source: %s - Country: %s - Action: blocked (default action on error)", ip, sourceString(isCached), CountryUnknown)
+			g.blockRequest(rw, CountryUnknown)
 			g.recordMetrics(CountryUnknown, "", "blocked")
 			return
 		}
+		g.log("debug", "Request from IP %s - Source: %s - Country: %s - Action: allowed (default action on error)", ip, sourceString(isCached), CountryUnknown)
 		g.next.ServeHTTP(rw, req)
 		return
 	}
 
 	if g.shouldBlock(geoInfo.Country) {
-		g.blockRequest(rw, geoInfo.Country, geoInfo.Organization)
+		g.log("debug", "Request from IP %s - Source: %s - Country: %s - Action: blocked", ip, sourceString(isCached), geoInfo.Country)
+		g.blockRequest(rw, geoInfo.Country)
 		g.recordMetrics(geoInfo.Country, geoInfo.Organization, "blocked")
 		return
 	}
+
+	g.log("debug", "Request from IP %s - Source: %s - Country: %s - Action: allowed", ip, sourceString(isCached), geoInfo.Country)
 
 	// Record allowed metric
 	g.recordMetrics(geoInfo.Country, geoInfo.Organization, "allowed")
@@ -365,6 +415,13 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		req.Header.Set("X-Organization", geoInfo.Organization)
 	}
 	g.next.ServeHTTP(rw, req)
+}
+
+func sourceString(isCached bool) string {
+	if isCached {
+		return "Cache"
+	}
+	return "API"
 }
 
 func (g *GeoBlock) getClientIP(req *http.Request) string {
@@ -422,15 +479,15 @@ func (g *GeoBlock) isTrustedProxy(ip string) bool {
 	return false
 }
 
-func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
+func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, bool, error) { // Returns info, isCached, err
 	// Check if it's a private/local IP
 	if g.isPrivateIP(ip) {
-		return &geoInfo{Country: "PRIVATE", Organization: ""}, nil
+		return &geoInfo{Country: "PRIVATE", Organization: ""}, false, nil
 	}
 
 	// Check cache first
 	if info := g.cache.get(ip); info != nil {
-		return info, nil
+		return info, true, nil
 	}
 
 	var info *geoInfo
@@ -446,20 +503,20 @@ func (g *GeoBlock) getGeoInfo(ip string) (*geoInfo, error) {
 				info.Organization = apiInfo.Organization
 			}
 			g.cache.set(ip, info, time.Duration(g.config.CacheDuration)*time.Minute)
-			return info, nil
+			return info, false, nil
 		}
 	}
 
 	// Fallback to API query
 	info, err = g.queryGeoIP(ip)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Cache the result
 	g.cache.set(ip, info, time.Duration(g.config.CacheDuration)*time.Minute)
 
-	return info, nil
+	return info, false, nil
 }
 
 func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
@@ -470,6 +527,7 @@ func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query geo IP: %w", err)
 	}
+	g.log(LevelInfo, "Queried API endpoint: %s", url)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -497,9 +555,7 @@ func (g *GeoBlock) queryGeoIP(ip string) (*geoInfo, error) {
 
 	if country == "" {
 		// Log the raw response for debugging
-		if g.config.LogBlocked {
-			fmt.Printf("[GeoBlock] Warning: Could not extract country from API response. Raw response: %s\n", string(body))
-		}
+		g.log(LevelWarning, "Could not extract country from API response. Raw response: %s", string(body))
 		return &geoInfo{Country: CountryUnknown, Organization: ""}, nil
 	}
 
@@ -568,14 +624,10 @@ func (g *GeoBlock) shouldBlock(country string) bool {
 	return g.config.DefaultAction == ActionBlock
 }
 
-func (g *GeoBlock) blockRequest(rw http.ResponseWriter, country, organization string) {
-	if g.config.LogBlocked {
-		if organization != "" {
-			fmt.Printf("[GeoBlock] Blocked request (Country: %s, Organization: %s)\n", country, organization)
-		} else {
-			fmt.Printf("[GeoBlock] Blocked request (Country: %s)\n", country)
-		}
-	}
+func (g *GeoBlock) blockRequest(rw http.ResponseWriter, country string) {
+	// We removed logBlocked, these details are now handled in ServeHTTP with debug level logs.
+	// However, we can log to debug level here as well if we want, but ServeHTTP already does it.
+	// No output needed here unless it's info level if you want, but user said debug logs every request.
 
 	// If redirect URL is configured, redirect instead of showing block page
 	if g.config.RedirectURL != "" {
@@ -775,7 +827,6 @@ func (g *GeoBlock) loadDatabaseFromFile() error {
 }
 
 func (g *GeoBlock) downloadDatabase() error {
-	fmt.Printf("[GeoBlock] Downloading database from %s\n", g.localDB.downloadURL)
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(g.localDB.downloadURL)
@@ -849,7 +900,6 @@ func (g *GeoBlock) downloadDatabase() error {
 		return fmt.Errorf("failed to save database: %w", err)
 	}
 
-	fmt.Printf("[GeoBlock] Database downloaded and loaded successfully with %d IP ranges\n", len(g.localDB.ranges))
 	return nil
 }
 
@@ -860,9 +910,9 @@ func (g *GeoBlock) databaseUpdater(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			fmt.Println("[GeoBlock] Starting daily database update...")
+			g.log(LevelInfo, "Starting daily database update...")
 			if err := g.downloadDatabase(); err != nil {
-				fmt.Printf("[GeoBlock] Failed to update database: %v\n", err)
+				g.log(LevelWarning, "Failed to update database: %v", err)
 			}
 		case <-ctx.Done():
 			return
