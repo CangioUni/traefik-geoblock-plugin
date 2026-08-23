@@ -144,10 +144,10 @@ func TestGetClientIP(t *testing.T) {
 func TestShouldBlock(t *testing.T) {
 	testCases := []struct {
 		name             string
-		allowedCountries []string
-		blockedCountries []string
 		defaultAction    string
 		country          string
+		allowedCountries []string
+		blockedCountries []string
 		expected         bool
 	}{
 		{
@@ -287,8 +287,8 @@ func TestServeHTTP(t *testing.T) {
 func TestCommaSeparatedCountries(t *testing.T) {
 	testCases := []struct {
 		name             string
-		allowedCountries []string
 		country          string
+		allowedCountries []string
 		shouldBlock      bool
 	}{
 		{
@@ -449,13 +449,10 @@ func TestTrustedProxyBypass(t *testing.T) {
 		nextCalled = true
 	})
 
-	handler, _ := New(context.Background(), nextHandler, config, "test")
-
-	// Even if it resolves to US (or any blocked country), if it's a trusted proxy, it bypasses.
 	// Since 192.168.1.1 is private IP, it normally resolves to PRIVATE and is allowed.
 	// Let's use a public IP as trusted proxy.
 	config.TrustedProxies = []string{"8.8.8.8"}
-	handler, _ = New(context.Background(), nextHandler, config, "test")
+	handler, _ := New(context.Background(), nextHandler, config, "test")
 
 	req := httptest.NewRequest("GET", "http://example.com", nil)
 	req.RemoteAddr = "8.8.8.8:1234"
