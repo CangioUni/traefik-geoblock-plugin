@@ -439,7 +439,10 @@ func (g *GeoBlock) getClientIP(req *http.Request) string {
 
 	// Check X-Real-IP header
 	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		ip := strings.TrimSpace(xri)
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
 	}
 
 	// Fall back to RemoteAddr
