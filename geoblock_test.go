@@ -120,6 +120,13 @@ func TestGetClientIP(t *testing.T) {
 			xRealIP:  "13.14.15.16",
 			expected: "13.14.15.16",
 		},
+		{
+			name:     "X-Real-IP Invalid",
+			remoteIP: "192.168.1.1:1234",
+			xff:      "",
+			xRealIP:  "invalid-ip",
+			expected: "192.168.1.1",
+		},
 	}
 
 	for _, tc := range testCases {
